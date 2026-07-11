@@ -26,9 +26,9 @@ class Config:
     NOTION_DB_STAFF: str = os.environ.get("NOTION_DB_STAFF", "")
     NOTION_DB_CLASSES: str = os.environ.get("NOTION_DB_CLASSES", "")
 
-    # ── OpenAI / LLM ────────────────────────────────────────────────────────
-    OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
-    LLM_MODEL: str = os.environ.get("LLM_MODEL", "gpt-4.1-mini")
+    # ── Gemini / LLM ────────────────────────────────────────────────────────
+    GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
+    LLM_MODEL: str = os.environ.get("LLM_MODEL", "gemini-3.1-flash-lite")
 
     # ── 風險通知對象 ─────────────────────────────────────────────────────────
     # 主管或維護者的 LINE userId，用於接收高風險提醒

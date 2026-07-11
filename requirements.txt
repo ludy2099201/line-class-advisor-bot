@@ -6,8 +6,8 @@ gunicorn>=22.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 
-# ── OpenAI ───────────────────────────────────────────────
-openai>=1.30.0
+# ── Google Gemini ──────────────────────────────────────────────
+google-genai>=1.0.0
 
 # ── Redis（Session 持久化，Railway Redis Plugin 使用）──────────────
 # 若不使用 Redis，可移除此行；系統會自動退回 In-Memory 模式

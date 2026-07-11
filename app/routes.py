@@ -76,7 +76,7 @@ def health_check():
         "LINE_CHANNEL_ACCESS_TOKEN",
         "LINE_CHANNEL_SECRET",
         "NOTION_API_TOKEN",
-        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
     ]
     missing = [k for k in required_keys if not config.get(k)]
 

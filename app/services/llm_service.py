@@ -1,10 +1,11 @@
 """
-LLM Service — OpenAI API 封裝
+LLM Service — Google Gemini API 封裝
 
 支援兩種呼叫模式：
 - chat()：一般對話，回傳純文字字串
-- chat_json()：強制 JSON 輸出（response_format=json_object），用於風險分析等結構化任務
+- chat_json()：強制 JSON 輸出，用於風險分析等結構化任務
 """
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -40,26 +41,26 @@ SYSTEM_PROMPT = """你是「{bot_name}」，{school_name} 的 AI 班主任助理
 
 
 class LlmService:
-    """OpenAI API 服務封裝，支援一般對話與結構化 JSON 輸出。"""
+    """Google Gemini API 服務封裝，支援一般對話與結構化 JSON 輸出。"""
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self._client = None  # 延遲初始化
 
     def _get_client(self):
-        """延遲初始化 OpenAI client，避免啟動時因缺少 API key 而崩潰。"""
+        """延遲初始化 Gemini client，避免啟動時因缺少 API key 而崩潰。"""
         if self._client is not None:
             return self._client
-        api_key = self.config.get("OPENAI_API_KEY", "")
+        api_key = self.config.get("GEMINI_API_KEY", "")
         if not api_key:
-            logger.warning("OPENAI_API_KEY not set; LLM calls will be skipped.")
+            logger.warning("GEMINI_API_KEY not set; LLM calls will be skipped.")
             return None
         try:
-            from openai import OpenAI  # pylint: disable=import-outside-toplevel
-            self._client = OpenAI(api_key=api_key)
+            from google import genai  # pylint: disable=import-outside-toplevel
+            self._client = genai.Client(api_key=api_key)
             return self._client
         except ImportError:
-            logger.error("openai package not installed.")
+            logger.error("google-genai package not installed. Run: pip install google-genai")
             return None
 
     def _build_system_prompt(self) -> str:
@@ -80,29 +81,31 @@ class LlmService:
         一般對話呼叫，回傳純文字字串。
         失敗時回傳空字串，不拋出例外。
         """
+        from google.genai import types  # pylint: disable=import-outside-toplevel
+
         client = self._get_client()
         if not client:
             return ""
 
-        model = self.config.get("LLM_MODEL", "gpt-4.1-mini")
-        messages = [
-            {"role": "system", "content": system_prompt or self._build_system_prompt()},
-            {"role": "user", "content": user_message},
-        ]
+        model = self.config.get("LLM_MODEL", "gemini-3.1-flash-lite")
+        sys_prompt = system_prompt or self._build_system_prompt()
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = client.chat.completions.create(
+                response = client.models.generate_content(
                     model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
+                    contents=user_message,
+                    config=types.GenerateContentConfig(
+                        system_instruction=sys_prompt,
+                        max_output_tokens=max_tokens,
+                        temperature=temperature,
+                    ),
                 )
-                content = response.choices[0].message.content or ""
+                content = response.text or ""
                 logger.debug(
-                    "LLM chat OK | model=%s | tokens=%d",
+                    "LLM chat OK | model=%s | chars=%d",
                     model,
-                    response.usage.total_tokens if response.usage else 0,
+                    len(content),
                 )
                 return content.strip()
             except Exception as exc:  # pylint: disable=broad-except
@@ -125,32 +128,39 @@ class LlmService:
         temperature: float = 0.1,
     ) -> Optional[Dict[str, Any]]:
         """
-        強制 JSON 輸出模式（response_format=json_object）。
+        強制 JSON 輸出模式（response_mime_type=application/json）。
         適用於風險分析等需要結構化回應的場景。
         回傳解析後的 dict；失敗時回傳 None。
         """
-        import json  # pylint: disable=import-outside-toplevel
+        from google.genai import types  # pylint: disable=import-outside-toplevel
 
         client = self._get_client()
         if not client:
             return None
 
-        model = self.config.get("LLM_MODEL", "gpt-4.1-mini")
-        messages = [
-            {"role": "system", "content": system_prompt or self._build_system_prompt()},
-            {"role": "user", "content": user_message},
-        ]
+        model = self.config.get("LLM_MODEL", "gemini-3.1-flash-lite")
+        sys_prompt = system_prompt or self._build_system_prompt()
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = client.chat.completions.create(
+                response = client.models.generate_content(
                     model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    response_format={"type": "json_object"},
+                    contents=user_message,
+                    config=types.GenerateContentConfig(
+                        system_instruction=sys_prompt,
+                        max_output_tokens=max_tokens,
+                        temperature=temperature,
+                        response_mime_type="application/json",
+                    ),
                 )
-                raw = response.choices[0].message.content or "{}"
+                raw = response.text or "{}"
+                # 移除可能的 markdown code block 包裝
+                raw = raw.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                    raw = raw.strip()
                 result = json.loads(raw)
                 logger.debug(
                     "LLM chat_json OK | model=%s | keys=%s", model, list(result.keys())
