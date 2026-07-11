@@ -72,16 +72,17 @@ class LeaveHandler:
 
         if state is None or clean_text in ("請假", "補課"):
             # 開始新的請假流程
-            self.session.set_state(user_id, STATE_WAIT_NAME, {})
+            self.session.clear(user_id)
+            self.session.set_state(user_id, STATE_WAIT_NAME)
             self.line_api.reply(reply_token, "好的，我來協助您登記請假。\n請問學生姓名？")
 
         elif state == STATE_WAIT_NAME:
-            self.session.update_data(user_id, {"student_name": clean_text})
+            self.session.update_data(user_id, student_name=clean_text)
             self.session.set_state(user_id, STATE_WAIT_DATE)
             self.line_api.reply(reply_token, f"謝謝！請問 {clean_text} 的請假日期？\n（格式：MM/DD，例如 05/10）")
 
         elif state == STATE_WAIT_DATE:
-            self.session.update_data(user_id, {"leave_date": clean_text})
+            self.session.update_data(user_id, leave_date=clean_text)
             self.session.set_state(user_id, STATE_WAIT_REASON)
             self.line_api.reply(
                 reply_token,
@@ -91,8 +92,9 @@ class LeaveHandler:
 
         elif state == STATE_WAIT_REASON:
             reason = clean_text if clean_text != "略過" else ""
-            data = self.session.get_data(user_id)
-            data["reason"] = reason
+            student_name = self.session.get_data(user_id, "student_name", "")
+            leave_date = self.session.get_data(user_id, "leave_date", "")
+            data = {"student_name": student_name, "leave_date": leave_date, "reason": reason}
 
             # 寫入 Notion
             success = self._save_leave_to_notion(data, user_id)

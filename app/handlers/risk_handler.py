@@ -102,27 +102,37 @@ class RiskHandler:
                 )
 
     def _analyze_risk(self, message: str) -> Dict[str, Any]:
-        """使用 LLM 分析風險等級。"""
-        import json
-
+        """使用 LLM JSON mode 分析風險等級，確保結構化輸出。"""
+        _default = {
+            "riskLevel": "low",
+            "category": "其他",
+            "shouldAlertTeacher": True,
+            "publicReplyAllowed": False,
+            "suggestedPrivateAlert": "訊息需要人工確認",
+            "suggestedPublicReply": "",
+        }
         prompt = RISK_ANALYSIS_PROMPT.format(message=message[:500])
-        response = self.llm.chat(prompt)
 
-        try:
-            # 嘗試解析 JSON
-            result = json.loads(response or "{}")
-            return result
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Failed to parse risk analysis JSON: %s", response)
-            # 回傳保守預設值
-            return {
-                "riskLevel": "low",
-                "category": "其他",
-                "shouldAlertTeacher": True,
-                "publicReplyAllowed": False,
-                "suggestedPrivateAlert": "訊息需要人工確認",
-                "suggestedPublicReply": "",
-            }
+        # 使用 chat_json() 確保回傳合法 JSON，避免解析失敗
+        result = self.llm.chat_json(
+            user_message=prompt,
+            system_prompt="你是風險分析模組，只回覆 JSON 格式的分析結果。",
+            max_tokens=300,
+            temperature=0.1,
+        )
+
+        if result is None:
+            logger.warning("Risk analysis returned None, using conservative defaults")
+            return _default
+
+        # 驗證必要欄位
+        required_fields = ["riskLevel", "category", "shouldAlertTeacher", "publicReplyAllowed"]
+        for field in required_fields:
+            if field not in result:
+                logger.warning("Risk analysis missing field: %s, using defaults", field)
+                return _default
+
+        return result
 
     def _notify_admin(self, risk_result: Dict[str, Any], ctx: Dict[str, Any]) -> None:
         """推播通知給管理員。"""

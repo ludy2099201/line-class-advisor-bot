@@ -1,9 +1,21 @@
+# Railway 部署設定
+# 文件：https://docs.railway.com/reference/config-as-code
+
 [build]
 builder = "NIXPACKS"
+# Nixpacks 自動偵測 Python 版本（依 .python-version 或 runtime.txt）
 
 [deploy]
-startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 30"
+# --workers 2：Railway Free tier 建議 2 個 worker
+# --timeout 60：LINE Webhook 最長等待 60 秒
+# --keep-alive 5：保持連線以減少 cold start 影響
+# --access-logfile - / --error-logfile -：輸出到 stdout，Railway 可收集
+startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60 --keep-alive 5 --access-logfile - --error-logfile -"
+
+# 健康檢查：Railway 定期 GET /health 確認服務正常
 healthcheckPath = "/health"
 healthcheckTimeout = 30
+
+# 重啟策略：失敗時自動重啟，最多 3 次
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
