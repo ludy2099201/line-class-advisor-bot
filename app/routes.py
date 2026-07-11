@@ -87,8 +87,11 @@ def health_check():
         "school": config.get("CRAM_SCHOOL_NAME", ""),
         "missing_config": missing,
     }
-    http_status = 200 if status == "ok" else 503
-    return jsonify(response), http_status
+    # 注意：Railway Healthcheck 要求回傳 2xx 才視為健康。
+    # 即使設定不完整（degraded），服務本身仍在運行，
+    # 因此一律回傳 200，讓 Railway 可以正常部署。
+    # 缺少的設定資訊已包含在 JSON body 中供診斷使用。
+    return jsonify(response), 200
 
 
 @linebot_bp.errorhandler(400)
