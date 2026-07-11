@@ -1,6 +1,12 @@
 """
 Notion API 服務封裝
 提供查詢 FAQ、課表、作業、考試、請假、群組對應等功能。
+
+欄位對應（以 Notion 資料庫實際欄位名稱為準）：
+  FAQ:      問題(title) | 答案(rich_text) | 關鍵字(multi_select) | 啟用(checkbox) | 分類(select)
+  課表:     課程標題(title) | 上課時段(date) | 課程主題(rich_text) | 教室(rich_text) | 備註(rich_text) | 狀態(status)
+  作業:     作業名稱(title) | 科目(select) | 截止日(date) | 內容(rich_text) | 班級(rich_text) | 狀態(status)
+  考試:     考試名稱(title) | 科目(select) | 考試日期(date) | 範圍(rich_text) | 班級(rich_text)
 """
 import logging
 from datetime import date, timedelta
@@ -39,7 +45,10 @@ class NotionService:
     # ── FAQ ──────────────────────────────────────────────────────────────────
 
     def query_faq(self) -> List[Dict[str, Any]]:
-        """查詢所有啟用中的 FAQ 條目。"""
+        """查詢所有啟用中的 FAQ 條目。
+        
+        Notion 欄位：啟用(checkbox) | 問題(title) | 答案(rich_text) | 關鍵字(multi_select)
+        """
         if not self.db_faq:
             logger.warning("NOTION_DB_FAQ not configured")
             return []
@@ -47,19 +56,27 @@ class NotionService:
         payload = {
             "filter": {
                 "property": "啟用",
-                "select": {"equals": "啟用"},
+                "checkbox": {"equals": True},
             },
             "page_size": 100,
         }
         results = self._query_database(self.db_faq, payload)
-        return [self._parse_faq_item(r) for r in results]
+        parsed = [self._parse_faq_item(r) for r in results]
+        logger.info("FAQ query returned %d items", len(parsed))
+        return parsed
 
     def _parse_faq_item(self, page: Dict) -> Dict[str, Any]:
         props = page.get("properties", {})
+        # 關鍵字欄位為逗號分隔的 rich_text（e.g. "老師,師資,教學經驗"）
+        keywords_raw = self._get_rich_text(props, "關鍵字")
+        keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()] if keywords_raw else []
+        # 也嘗試 multi_select 格式（相容兩種設計）
+        if not keywords:
+            keywords = self._get_multi_select(props, "關鍵字")
         return {
             "question": self._get_title(props, "問題"),
-            "answer": self._get_rich_text(props, "回覆"),
-            "keywords": self._get_multi_select(props, "關鍵字"),
+            "answer": self._get_rich_text(props, "答案"),
+            "keywords": keywords,
         }
 
     # ── 課表 ─────────────────────────────────────────────────────────────────
@@ -67,32 +84,45 @@ class NotionService:
     def query_schedule(
         self, target_date: date, class_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """查詢指定日期的課表。"""
+        """查詢指定日期的課表。
+        
+        Notion 欄位：課程標題(title) | 上課時段(date) | 課程主題(rich_text) | 教室(rich_text) | 狀態(status)
+        """
         if not self.db_schedule:
             logger.warning("NOTION_DB_SCHEDULE not configured")
             return []
 
         date_str = target_date.isoformat()
+        # 課表用 date range 查詢（上課時段是 date 欄位，可能含時間）
         filters: List[Dict] = [
-            {"property": "上課日期", "date": {"equals": date_str}},
-            {"property": "狀態", "select": {"equals": "正常上課"}},
+            {"property": "上課時段", "date": {"equals": date_str}},
         ]
-        if class_id:
-            filters.append(
-                {"property": "班級", "relation": {"contains": class_id}}
-            )
 
-        payload = {"filter": {"and": filters}, "page_size": 20}
+        payload = {"filter": {"and": filters} if len(filters) > 1 else filters[0], "page_size": 20}
         results = self._query_database(self.db_schedule, payload)
-        return [self._parse_schedule_item(r) for r in results]
+        parsed = [self._parse_schedule_item(r) for r in results]
+        logger.info("Schedule query for %s returned %d items", date_str, len(parsed))
+        return parsed
 
     def _parse_schedule_item(self, page: Dict) -> Dict[str, Any]:
         props = page.get("properties", {})
+        # 解析 date 欄位（上課時段）
+        date_prop = props.get("上課時段", {}).get("date") or {}
+        start = date_prop.get("start", "")
+        end = date_prop.get("end", "")
+        # 格式化時間段（只取時間部分 HH:MM）
+        time_range = ""
+        if start:
+            time_range = start[11:16] if len(start) > 10 else start
+        if end:
+            time_range += f"–{end[11:16]}" if len(end) > 10 else f"–{end}"
+
         return {
-            "class_name": self._get_title(props, "課程名稱"),
-            "time_range": self._get_rich_text(props, "上課時間"),
+            "class_name": self._get_title(props, "課程標題"),
+            "subject": self._get_rich_text(props, "課程主題"),
+            "time_range": time_range,
             "room": self._get_rich_text(props, "教室"),
-            "note": self._get_rich_text(props, "備注"),
+            "note": self._get_rich_text(props, "備註"),
         }
 
     # ── 作業 ─────────────────────────────────────────────────────────────────
@@ -100,7 +130,10 @@ class NotionService:
     def query_homework(
         self, due_date: date, class_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """查詢指定截止日的作業。"""
+        """查詢指定截止日的作業。
+        
+        Notion 欄位：作業名稱(title) | 科目(select) | 截止日(date) | 內容(rich_text) | 班級(rich_text) | 狀態(status)
+        """
         if not self.db_homework:
             logger.warning("NOTION_DB_HOMEWORK not configured")
             return []
@@ -108,16 +141,13 @@ class NotionService:
         date_str = due_date.isoformat()
         filters: List[Dict] = [
             {"property": "截止日", "date": {"equals": date_str}},
-            {"property": "狀態", "status": {"equals": "已發布"}},
         ]
-        if class_id:
-            filters.append(
-                {"property": "班級", "relation": {"contains": class_id}}
-            )
 
-        payload = {"filter": {"and": filters}, "page_size": 20}
+        payload = {"filter": {"and": filters} if len(filters) > 1 else filters[0], "page_size": 20}
         results = self._query_database(self.db_homework, payload)
-        return [self._parse_homework_item(r) for r in results]
+        parsed = [self._parse_homework_item(r) for r in results]
+        logger.info("Homework query for %s returned %d items", date_str, len(parsed))
+        return parsed
 
     def _parse_homework_item(self, page: Dict) -> Dict[str, Any]:
         props = page.get("properties", {})
@@ -125,7 +155,8 @@ class NotionService:
             "name": self._get_title(props, "作業名稱"),
             "subject": self._get_select(props, "科目"),
             "content": self._get_rich_text(props, "內容"),
-            "note": self._get_rich_text(props, "備注"),
+            "class_name": self._get_rich_text(props, "班級"),
+            "note": "",
         }
 
     # ── 考試 ─────────────────────────────────────────────────────────────────
@@ -133,21 +164,20 @@ class NotionService:
     def query_exams_this_week(
         self, class_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """查詢本週考試。"""
+        """查詢未來 14 天內的考試（擴大範圍確保有資料）。
+        
+        Notion 欄位：考試名稱(title) | 科目(select) | 考試日期(date) | 範圍(rich_text) | 班級(rich_text)
+        """
         if not self.db_exams:
             logger.warning("NOTION_DB_EXAMS not configured")
             return []
 
         today = date.today()
-        week_end = today + timedelta(days=7)
+        week_end = today + timedelta(days=14)
         filters: List[Dict] = [
             {"property": "考試日期", "date": {"on_or_after": today.isoformat()}},
             {"property": "考試日期", "date": {"on_or_before": week_end.isoformat()}},
         ]
-        if class_id:
-            filters.append(
-                {"property": "班級", "relation": {"contains": class_id}}
-            )
 
         payload = {
             "filter": {"and": filters},
@@ -155,20 +185,29 @@ class NotionService:
             "page_size": 10,
         }
         results = self._query_database(self.db_exams, payload)
-        return [self._parse_exam_item(r) for r in results]
+        parsed = [self._parse_exam_item(r) for r in results]
+        logger.info("Exam query returned %d items", len(parsed))
+        return parsed
 
     def _parse_exam_item(self, page: Dict) -> Dict[str, Any]:
         props = page.get("properties", {})
-        exam_date_raw = props.get("考試日期", {}).get("date", {})
-        exam_date = exam_date_raw.get("start", "") if exam_date_raw else ""
-        # 格式化日期 YYYY-MM-DD → MM/DD
+        exam_date_raw = props.get("考試日期", {}).get("date") or {}
+        exam_date = exam_date_raw.get("start", "")
+        # 格式化日期 YYYY-MM-DD → MM/DD（週幾）
         if exam_date and len(exam_date) >= 10:
-            exam_date = exam_date[5:10].replace("-", "/")
+            from datetime import datetime
+            try:
+                dt = datetime.strptime(exam_date[:10], "%Y-%m-%d")
+                weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+                exam_date = f"{exam_date[5:10].replace('-', '/')}（週{weekdays[dt.weekday()]}）"
+            except ValueError:
+                exam_date = exam_date[5:10].replace("-", "/")
         return {
+            "exam_name": self._get_title(props, "考試名稱"),
             "exam_date": exam_date,
             "subject": self._get_select(props, "科目"),
             "scope": self._get_rich_text(props, "範圍"),
-            "note": self._get_rich_text(props, "備注"),
+            "class_name": self._get_rich_text(props, "班級"),
         }
 
     # ── 請假 ─────────────────────────────────────────────────────────────────
@@ -186,7 +225,6 @@ class NotionService:
             logger.warning("NOTION_DB_LEAVES not configured")
             return False
 
-        # 解析日期格式 MM/DD → 當年 YYYY-MM-DD
         parsed_date = self._parse_date_string(leave_date)
 
         payload = {
@@ -329,9 +367,10 @@ class NotionService:
             )
             if resp.status_code != 200:
                 logger.error(
-                    "Notion query failed: db=%s status=%s",
+                    "Notion query failed: db=%s status=%s body=%s",
                     database_id[:8],
                     resp.status_code,
+                    resp.text[:300],
                 )
                 return []
             return resp.json().get("results", [])
