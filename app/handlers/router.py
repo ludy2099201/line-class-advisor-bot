@@ -115,6 +115,12 @@ class LineRouter:
         if group_id and self.bind_handler.handle_step(ctx):
             return  # 已被 bind_handler 處理，不繼續路由
 
+        # ── 優先：檢查是否在課後筆記流程中（多輪對話） ─────────────────────────
+        note_reply = self.note_handler.handle_step(user_id, text)
+        if note_reply is not None:
+            self.line_api.reply(reply_token, note_reply)
+            return
+
         # ── 優先：檢查是否在請假流程中（多輪對話） ──────────────────────────
         if self.leave_handler.is_in_session(ctx):
             self.leave_handler.handle(ctx)
@@ -160,6 +166,12 @@ class LineRouter:
             self.bind_handler.handle_start(ctx)
         elif command == "check_binding":
             self._handle_check_binding(ctx)
+        elif command == "note_create":
+            self._handle_note_create(ctx)
+        elif command == "note_list_today":
+            self._handle_note_list_today(ctx)
+        elif text.startswith("查詢筆記"):
+            self._handle_note_query(ctx)
         elif command == "faq":
             self.faq_handler.handle(ctx)
         elif ctx["is_mentioned"] or source_type == "user":
@@ -252,3 +264,62 @@ class LineRouter:
             "is_privacy_candidate": is_privacy_candidate,
             "should_reply": should_reply,
         }
+
+    def _handle_note_create(self, ctx: Dict[str, Any]) -> None:
+        """啟動課後筆記記錄流程。"""
+        user_id = ctx["user_id"]
+        reply_token = ctx["reply_token"]
+        first_reply = self.note_handler.start(user_id, self.notion)
+        self.line_api.reply(reply_token, first_reply)
+
+    def _handle_note_list_today(self, ctx: Dict[str, Any]) -> None:
+        """列出今日所有課後筆記。"""
+        from datetime import date
+        reply_token = ctx["reply_token"]
+        today = date.today().isoformat()
+        notes = self.notion.get_notes_by_date(today)
+        if not notes:
+            self.line_api.reply(reply_token, f"📓 今日（{today}）尚無課後筆記。")
+            return
+        lines = [f"📓 今日課後筆記（共 {len(notes)} 筆）\n"]
+        for i, n in enumerate(notes, 1):
+            perf = f"【{n['performance']}】" if n.get("performance") else ""
+            emo = f"😊{n['emotion']}" if n.get("emotion") else ""
+            lines.append(
+                f"{i}. {n['student']} {perf}{emo}\n"
+                f"   課程：{n.get('course', '—')}\n"
+                f"   {n.get('content', '')[:50]}"
+            )
+            if n.get("followup"):
+                lines.append(f"   🔔 追蹤：{n['followup'][:30]}")
+        self.line_api.reply(reply_token, "\n".join(lines))
+
+    def _handle_note_query(self, ctx: Dict[str, Any]) -> None:
+        """查詢特定學生的歷史課後筆記。格式：查詢筆記 學生姓名"""
+        reply_token = ctx["reply_token"]
+        text = ctx["text"]
+        # 解析學生姓名：「查詢筆記 王小明」
+        parts = text.replace("查詢筆記", "").strip()
+        if not parts:
+            self.line_api.reply(
+                reply_token,
+                "請輸入學生姓名，例如：\n查詢筆記 王小明"
+            )
+            return
+        student_name = parts
+        notes = self.notion.get_student_notes(student_name, limit=5)
+        if not notes:
+            self.line_api.reply(reply_token, f"📓 找不到「{student_name}」的課後筆記。")
+            return
+        lines = [f"📓 {student_name} 的最近 {len(notes)} 筆課後筆記\n"]
+        for n in notes:
+            perf = f"【{n['performance']}】" if n.get("performance") else ""
+            emo = f" {n['emotion']}" if n.get("emotion") else ""
+            lines.append(
+                f"📅 {n['date']} {n.get('course', '')} {perf}{emo}\n"
+                f"   {n.get('content', '')[:80]}"
+            )
+            if n.get("followup"):
+                lines.append(f"   🔔 追蹤：{n['followup'][:40]}")
+            lines.append("")
+        self.line_api.reply(reply_token, "\n".join(lines).strip())

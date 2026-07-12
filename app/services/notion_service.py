@@ -38,6 +38,7 @@ class NotionService:
         self.db_line_groups = config.get("NOTION_DB_LINE_GROUPS", "")
         self.db_ai_alerts = config.get("NOTION_DB_AI_ALERTS", "")
         self.db_classes = config.get("NOTION_DB_CLASSES", "")
+        self.db_notes = config.get("NOTION_DB_NOTES", "")
 
         # 快取群組對應班級（減少 API 呼叫）
         self._group_class_cache: Dict[str, Optional[str]] = {}
@@ -525,3 +526,139 @@ class NotionService:
             except ValueError:
                 pass
         return ""
+
+
+    # ── 課後筆記 Notes ────────────────────────────────────────────────────────
+
+    def create_note(
+        self,
+        title: str,
+        student: str,
+        date: str,
+        course: str = "",
+        teacher: str = "",
+        performance: str = "",
+        emotion: str = "",
+        content: str = "",
+        followup: str = "",
+        recorder_user_id: str = ""
+    ) -> bool:
+        """新增一筆課後筆記到 Notion。"""
+        if not self.db_notes:
+            logger.warning("NOTION_DB_NOTES 未設定，無法儲存課後筆記")
+            return False
+
+        properties: Dict[str, Any] = {
+            "筆記標題": {"title": [{"text": {"content": title}}]},
+            "學生姓名": {"rich_text": [{"text": {"content": student}}]},
+            "記錄日期": {"date": {"start": date}},
+        }
+        if course:
+            properties["課程"] = {"rich_text": [{"text": {"content": course}}]}
+        if teacher:
+            properties["老師"] = {"rich_text": [{"text": {"content": teacher}}]}
+        if performance:
+            properties["學習表現"] = {"select": {"name": performance}}
+        if emotion:
+            properties["情緒狀態"] = {"select": {"name": emotion}}
+        if content:
+            properties["筆記內容"] = {"rich_text": [{"text": {"content": content[:2000]}}]}
+        if followup:
+            properties["追蹤事項"] = {"rich_text": [{"text": {"content": followup[:2000]}}]}
+        if recorder_user_id:
+            properties["LINE 記錄者 userId"] = {"rich_text": [{"text": {"content": recorder_user_id}}]}
+
+        payload = {
+            "parent": {"database_id": self.db_notes},
+            "properties": properties
+        }
+        try:
+            r = requests.post(f"{NOTION_API_BASE}/pages", headers=self._headers, json=payload, timeout=10)
+            if r.status_code not in (200, 201):
+                logger.error(f"新增課後筆記失敗: {r.status_code} {r.text[:200]}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"新增課後筆記例外: {e}")
+            return False
+
+    def get_student_notes(self, student_name: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """查詢特定學生的歷史課後筆記（最新在前）。"""
+        if not self.db_notes:
+            return []
+
+        payload = {
+            "filter": {
+                "property": "學生姓名",
+                "rich_text": {"contains": student_name}
+            },
+            "sorts": [{"property": "記錄日期", "direction": "descending"}],
+            "page_size": limit
+        }
+        try:
+            r = requests.post(
+                f"{NOTION_API_BASE}/databases/{self.db_notes}/query",
+                headers=self._headers, json=payload, timeout=10
+            )
+            if r.status_code != 200:
+                logger.error(f"查詢學生筆記失敗: {r.status_code}")
+                return []
+
+            results = []
+            for page in r.json().get("results", []):
+                props = page["properties"]
+                date_val = props.get("記錄日期", {}).get("date")
+                results.append({
+                    "student": self._get_rich_text(props, "學生姓名"),
+                    "date": date_val.get("start", "") if date_val else "",
+                    "course": self._get_rich_text(props, "課程"),
+                    "teacher": self._get_rich_text(props, "老師"),
+                    "performance": self._get_select(props, "學習表現"),
+                    "emotion": self._get_select(props, "情緒狀態"),
+                    "content": self._get_rich_text(props, "筆記內容"),
+                    "followup": self._get_rich_text(props, "追蹤事項"),
+                })
+            return results
+        except Exception as e:
+            logger.error(f"查詢學生筆記例外: {e}")
+            return []
+
+    def get_notes_by_date(self, date_str: str) -> List[Dict[str, Any]]:
+        """查詢特定日期的所有課後筆記。"""
+        if not self.db_notes:
+            return []
+
+        payload = {
+            "filter": {
+                "and": [
+                    {"property": "記錄日期", "date": {"on_or_after": date_str}},
+                    {"property": "記錄日期", "date": {"on_or_before": date_str}}
+                ]
+            },
+            "sorts": [{"property": "記錄日期", "direction": "ascending"}],
+            "page_size": 50
+        }
+        try:
+            r = requests.post(
+                f"{NOTION_API_BASE}/databases/{self.db_notes}/query",
+                headers=self._headers, json=payload, timeout=10
+            )
+            if r.status_code != 200:
+                return []
+
+            results = []
+            for page in r.json().get("results", []):
+                props = page["properties"]
+                results.append({
+                    "student": self._get_rich_text(props, "學生姓名"),
+                    "course": self._get_rich_text(props, "課程"),
+                    "teacher": self._get_rich_text(props, "老師"),
+                    "performance": self._get_select(props, "學習表現"),
+                    "emotion": self._get_select(props, "情緒狀態"),
+                    "content": self._get_rich_text(props, "筆記內容"),
+                    "followup": self._get_rich_text(props, "追蹤事項"),
+                })
+            return results
+        except Exception as e:
+            logger.error(f"查詢日期筆記例外: {e}")
+            return []

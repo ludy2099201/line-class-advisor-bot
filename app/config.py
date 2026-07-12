@@ -25,6 +25,7 @@ class Config:
     NOTION_DB_AI_ALERTS: str = os.environ.get("NOTION_DB_AI_ALERTS", "")
     NOTION_DB_STAFF: str = os.environ.get("NOTION_DB_STAFF", "")
     NOTION_DB_CLASSES: str = os.environ.get("NOTION_DB_CLASSES", "")
+    NOTION_DB_NOTES: str = os.environ.get("NOTION_DB_NOTES", "")
 
     # ── Gemini / LLM ────────────────────────────────────────────────────────
     GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
