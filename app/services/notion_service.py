@@ -37,6 +37,7 @@ class NotionService:
         self.db_leaves = config.get("NOTION_DB_LEAVES", "")
         self.db_line_groups = config.get("NOTION_DB_LINE_GROUPS", "")
         self.db_ai_alerts = config.get("NOTION_DB_AI_ALERTS", "")
+        self.db_classes = config.get("NOTION_DB_CLASSES", "")
 
         # 快取群組對應班級（減少 API 呼叫）
         self._group_class_cache: Dict[str, Optional[str]] = {}
@@ -86,22 +87,36 @@ class NotionService:
     ) -> List[Dict[str, Any]]:
         """查詢指定日期的課表。
         
-        Notion 欄位：課程標題(title) | 上課時段(date) | 課程主題(rich_text) | 教室(rich_text) | 狀態(status)
+        Notion 欄位：課程標題(title) | 上課時段(date) | 課程主題(rich_text) | 教室(rich_text) | 備註(rich_text)
+        class_id 實際上是班級名稱字串（從 LINE Groups 資料庫取得），用於篩選課程標題。
         """
         if not self.db_schedule:
             logger.warning("NOTION_DB_SCHEDULE not configured")
             return []
 
         date_str = target_date.isoformat()
-        # 課表用 date range 查詢（上課時段是 date 欄位，可能含時間）
+        # 課表的「上課時段」是含時間的 date 欄位，需用 on_or_after + before 範圍查詢
+        next_date_str = (target_date + timedelta(days=1)).isoformat()
         filters: List[Dict] = [
-            {"property": "上課時段", "date": {"equals": date_str}},
+            {"property": "上課時段", "date": {"on_or_after": date_str}},
+            {"property": "上課時段", "date": {"before": next_date_str}},
         ]
 
-        payload = {"filter": {"and": filters} if len(filters) > 1 else filters[0], "page_size": 20}
+        # 若有班級名稱，加入課程標題篩選
+        if class_id:
+            filters.append(
+                {"property": "課程標題", "title": {"contains": class_id}}
+            )
+            logger.info("Schedule query with class filter: %s", class_id)
+
+        payload = {
+            "filter": {"and": filters},
+            "sorts": [{"property": "上課時段", "direction": "ascending"}],
+            "page_size": 20,
+        }
         results = self._query_database(self.db_schedule, payload)
         parsed = [self._parse_schedule_item(r) for r in results]
-        logger.info("Schedule query for %s returned %d items", date_str, len(parsed))
+        logger.info("Schedule query for %s (class=%s) returned %d items", date_str, class_id, len(parsed))
         return parsed
 
     def _parse_schedule_item(self, page: Dict) -> Dict[str, Any]:
@@ -133,6 +148,7 @@ class NotionService:
         """查詢指定截止日的作業。
         
         Notion 欄位：作業名稱(title) | 科目(select) | 截止日(date) | 內容(rich_text) | 班級(rich_text) | 狀態(status)
+        class_id 實際上是班級名稱字串，用於篩選「班級」欄位。
         """
         if not self.db_homework:
             logger.warning("NOTION_DB_HOMEWORK not configured")
@@ -143,10 +159,17 @@ class NotionService:
             {"property": "截止日", "date": {"equals": date_str}},
         ]
 
-        payload = {"filter": {"and": filters} if len(filters) > 1 else filters[0], "page_size": 20}
+        # 若有班級名稱，加入班級欄位篩選
+        if class_id:
+            filters.append(
+                {"property": "班級", "rich_text": {"contains": class_id}}
+            )
+            logger.info("Homework query with class filter: %s", class_id)
+
+        payload = {"filter": {"and": filters}, "page_size": 20}
         results = self._query_database(self.db_homework, payload)
         parsed = [self._parse_homework_item(r) for r in results]
-        logger.info("Homework query for %s returned %d items", date_str, len(parsed))
+        logger.info("Homework query for %s (class=%s) returned %d items", date_str, class_id, len(parsed))
         return parsed
 
     def _parse_homework_item(self, page: Dict) -> Dict[str, Any]:
@@ -299,7 +322,11 @@ class NotionService:
     # ── 群組對應班級 ──────────────────────────────────────────────────────────
 
     def get_class_id_by_group(self, group_id: str) -> Optional[str]:
-        """從 LINE Groups 資料庫取得群組對應的班級 ID。"""
+        """從 LINE Groups 資料庫取得群組對應的班級名稱（作為 class_id 使用）。
+        
+        Notion 欄位：LINE groupId(rich_text) | 對應班級(rich_text) | 啟用狀態(select)
+        回傳班級名稱字串，供課表/作業查詢篩選使用；找不到時回傳 None。
+        """
         if group_id in self._group_class_cache:
             return self._group_class_cache[group_id]
 
@@ -316,18 +343,18 @@ class NotionService:
             "page_size": 1,
         }
         results = self._query_database(self.db_line_groups, payload)
-        class_id = None
+        class_name = None
         if results:
             props = results[0].get("properties", {})
-            relations = props.get("對應班級", {}).get("relation", [])
-            if relations:
-                class_id = relations[0].get("id")
+            # 對應班級是 rich_text 欄位，存班級名稱文字
+            class_name = self._get_rich_text(props, "對應班級") or None
 
-        self._group_class_cache[group_id] = class_id
-        return class_id
+        self._group_class_cache[group_id] = class_name
+        logger.info("Group %s mapped to class: %s", group_id[:8], class_name)
+        return class_name
 
     def get_class_name_by_group(self, group_id: str) -> str:
-        """從 LINE Groups 資料庫取得群組對應的班級名稱。"""
+        """從 LINE Groups 資料庫取得群組名稱（顯示用）。"""
         if group_id in self._group_class_name_cache:
             return self._group_class_name_cache[group_id]
 
@@ -349,6 +376,91 @@ class NotionService:
 
         self._group_class_name_cache[group_id] = name
         return name
+
+    def list_classes(self) -> List[Dict[str, Any]]:
+        """列出所有開課中的班級，供綁定流程顯示選單。"""
+        if not self.db_classes:
+            logger.warning("NOTION_DB_CLASSES not configured")
+            return []
+
+        payload = {
+            "filter": {"property": "開課中", "checkbox": {"equals": True}},
+            "sorts": [{"property": "班名", "direction": "ascending"}],
+            "page_size": 50,
+        }
+        results = self._query_database(self.db_classes, payload)
+        classes = []
+        for row in results:
+            props = row.get("properties", {})
+            name = self._get_title(props, "班名")
+            time_slot = self._get_rich_text(props, "時段")
+            days = self._get_multi_select(props, "上課週幾")
+            if name:
+                classes.append({
+                    "name": name,
+                    "time_slot": time_slot,
+                    "days": "、".join(days) if days else "",
+                })
+        logger.info("list_classes returned %d items", len(classes))
+        return classes
+
+    def bind_group_to_class(
+        self, group_id: str, group_name: str, class_name: str
+    ) -> bool:
+        """將 LINE groupId 寫入 LINE Groups 資料庫，完成群組綁定。
+        
+        若已有同名群組記錄則更新，否則新增。
+        """
+        if not self.db_line_groups:
+            logger.warning("NOTION_DB_LINE_GROUPS not configured")
+            return False
+
+        # 先查詢是否已有此 groupId 的記錄
+        payload = {
+            "filter": {
+                "property": "LINE groupId",
+                "rich_text": {"equals": group_id},
+            },
+            "page_size": 1,
+        }
+        existing = self._query_database(self.db_line_groups, payload)
+
+        properties = {
+            "群組名稱": {"title": [{"text": {"content": group_name}}]},
+            "LINE groupId": {"rich_text": [{"text": {"content": group_id}}]},
+            "對應班級": {"rich_text": [{"text": {"content": class_name}}]},
+            "啟用狀態": {"select": {"name": "啟用"}},
+        }
+
+        try:
+            if existing:
+                # 更新現有記錄
+                page_id = existing[0]["id"]
+                resp = requests.patch(
+                    f"{NOTION_API_BASE}/pages/{page_id}",
+                    json={"properties": properties},
+                    headers=self._headers,
+                    timeout=15,
+                )
+            else:
+                # 新增記錄
+                resp = requests.post(
+                    f"{NOTION_API_BASE}/pages",
+                    json={"parent": {"database_id": self.db_line_groups}, "properties": properties},
+                    headers=self._headers,
+                    timeout=15,
+                )
+            if resp.status_code in (200, 201):
+                # 清除快取，讓下次查詢取得最新資料
+                self._group_class_cache.pop(group_id, None)
+                self._group_class_name_cache.pop(group_id, None)
+                logger.info("Group %s bound to class %s", group_id[:8], class_name)
+                return True
+            logger.error("bind_group_to_class failed: %s %s", resp.status_code, resp.text[:200])
+            return False
+        except requests.RequestException as exc:
+            logger.exception("bind_group_to_class error: %s", exc)
+            return False
 
     # ── 內部工具方法 ──────────────────────────────────────────────────────────
 

@@ -13,11 +13,13 @@ from typing import Any, Dict, Optional
 
 from ..services.line_api import LineApiService
 from ..services.notion_service import NotionService
+from ..utils.session_store import SessionStore
 from .faq_handler import FaqHandler
 from .schedule_handler import ScheduleHandler
 from .homework_handler import HomeworkHandler
 from .leave_handler import LeaveHandler
 from .risk_handler import RiskHandler
+from .bind_handler import BindHandler
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,8 @@ COMMANDS = {
     "補課": "makeup_class",
     "學費": "faq",
     "上課時間": "faq",
+    "綁定班級": "bind_class",       # 新增：群組綁定班級
+    "查詢綁定": "check_binding",    # 新增：查詢目前群組綁定狀態
 }
 
 # 個資相關關鍵字，群組中不公開回覆
@@ -54,11 +58,13 @@ class LineRouter:
         self.config = config
         self.line_api = LineApiService(config)
         self.notion = NotionService(config)
+        self.session = SessionStore(config)
         self.faq_handler = FaqHandler(config, self.line_api, self.notion)
         self.schedule_handler = ScheduleHandler(config, self.line_api, self.notion)
         self.homework_handler = HomeworkHandler(config, self.line_api, self.notion)
         self.leave_handler = LeaveHandler(config, self.line_api, self.notion)
         self.risk_handler = RiskHandler(config, self.line_api, self.notion)
+        self.bind_handler = BindHandler(config, self.line_api, self.notion, self.session)
 
     def handle(self, event: Dict[str, Any]) -> None:
         """處理單一 LINE 事件。"""
@@ -105,6 +111,15 @@ class LineRouter:
             ctx.get("is_privacy_candidate"),
         )
 
+        # ── 優先：檢查是否在綁定流程中（多輪對話） ──────────────────────────
+        if group_id and self.bind_handler.handle_step(ctx):
+            return  # 已被 bind_handler 處理，不繼續路由
+
+        # ── 優先：檢查是否在請假流程中（多輪對話） ──────────────────────────
+        if self.leave_handler.is_in_session(ctx):
+            self.leave_handler.handle(ctx)
+            return
+
         # ── 風險偵測（優先，不受靜默規則限制）──────────────────────────────
         if ctx["is_risk_candidate"]:
             self.risk_handler.handle(ctx)
@@ -141,6 +156,10 @@ class LineRouter:
             self.homework_handler.handle_exam(ctx)
         elif command in ("leave", "makeup_class"):
             self.leave_handler.handle(ctx)
+        elif command == "bind_class":
+            self.bind_handler.handle_start(ctx)
+        elif command == "check_binding":
+            self._handle_check_binding(ctx)
         elif command == "faq":
             self.faq_handler.handle(ctx)
         elif ctx["is_mentioned"] or source_type == "user":
@@ -148,6 +167,36 @@ class LineRouter:
             self.faq_handler.handle(ctx)
         else:
             logger.debug("No matching handler for command: %s", command)
+
+    def _handle_check_binding(self, ctx: Dict[str, Any]) -> None:
+        """查詢目前群組的班級綁定狀態。"""
+        reply_token = ctx["reply_token"]
+        group_id = ctx.get("group_id")
+
+        if not group_id:
+            self.line_api.reply(reply_token, "此功能僅限群組使用。")
+            return
+
+        class_name = self.notion.get_class_id_by_group(group_id)
+        group_display_name = self.notion.get_class_name_by_group(group_id)
+
+        if class_name:
+            self.line_api.reply(
+                reply_token,
+                f"📌 此群組目前綁定狀態：\n"
+                f"群組名稱：{group_display_name}\n"
+                f"對應班級：{class_name}\n\n"
+                f"查詢「今日課表」、「今日作業」等指令時，\n"
+                f"Bot 將自動顯示 {class_name} 的專屬資訊。\n\n"
+                f"如需重新綁定，請輸入「綁定班級」。",
+            )
+        else:
+            self.line_api.reply(
+                reply_token,
+                "📌 此群組尚未綁定班級。\n\n"
+                "輸入「綁定班級」開始設定，\n"
+                "綁定後查詢課表和作業時將顯示該班級的專屬資訊。",
+            )
 
     def _parse_context(
         self,
