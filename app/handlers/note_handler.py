@@ -9,10 +9,9 @@
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 
-from ..services import notion_service as notion
 from ..utils.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -32,8 +31,17 @@ EMOTION_EMOJI = {
 
 
 class NoteHandler:
-    def __init__(self, session_store: SessionStore):
+    def __init__(self, session_store: SessionStore, notion=None):
+        """
+        :param session_store: SessionStore 實例
+        :param notion: NotionService 實例（可選，若未傳入則在 router 初始化後透過 set_notion 設定）
+        """
         self.session = session_store
+        self.notion = notion
+
+    def set_notion(self, notion) -> None:
+        """設定 NotionService 實例（供 router 在初始化後呼叫）。"""
+        self.notion = notion
 
     # ─────────────────────────────────────────────
     # 公開入口
@@ -85,8 +93,10 @@ class NoteHandler:
 
     def query_student_notes(self, student_name: str, limit: int = 5) -> str:
         """查詢特定學生的歷史筆記"""
+        if not self.notion:
+            return "⚠️ 筆記查詢服務尚未初始化，請聯繫管理員。"
         try:
-            notes = notion.get_student_notes(student_name, limit)
+            notes = self.notion.get_student_notes(student_name, limit)
             if not notes:
                 return f"📓 找不到「{student_name}」的課後筆記記錄。"
 
@@ -120,9 +130,11 @@ class NoteHandler:
 
     def query_today_notes(self) -> str:
         """查詢今日所有課後筆記"""
+        if not self.notion:
+            return "⚠️ 筆記查詢服務尚未初始化，請聯繫管理員。"
         try:
             today = date.today().isoformat()
-            notes = notion.get_notes_by_date(today)
+            notes = self.notion.get_notes_by_date(today)
             if not notes:
                 return f"📓 今日（{today}）尚無課後筆記記錄。"
 
@@ -269,6 +281,10 @@ class NoteHandler:
                 return "❌ 已取消，筆記未儲存。"
             return "請輸入「確認」儲存筆記，或「取消」放棄。"
 
+        if not self.notion:
+            self.session.delete(user_id)
+            return "⚠️ 儲存服務尚未初始化，請聯繫管理員。"
+
         data = state["data"]
         teacher = state.get("teacher", "老師")
         today = date.today().isoformat()
@@ -284,7 +300,7 @@ class NoteHandler:
         title = f"{today} {student} 課後筆記"
 
         try:
-            notion.create_note(
+            self.notion.create_note(
                 title=title,
                 student=student,
                 date=today,

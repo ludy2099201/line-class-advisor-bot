@@ -69,7 +69,7 @@ class LineRouter:
         self.leave_handler = LeaveHandler(config, self.line_api, self.notion)
         self.risk_handler = RiskHandler(config, self.line_api, self.notion)
         self.bind_handler = BindHandler(config, self.line_api, self.notion, self.session)
-        self.note_handler = NoteHandler(self.session)
+        self.note_handler = NoteHandler(self.session, self.notion)
 
     def handle(self, event: Dict[str, Any]) -> None:
         """處理單一 LINE 事件。"""
