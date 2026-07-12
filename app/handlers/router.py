@@ -20,6 +20,7 @@ from .homework_handler import HomeworkHandler
 from .leave_handler import LeaveHandler
 from .risk_handler import RiskHandler
 from .bind_handler import BindHandler
+from .note_handler import NoteHandler
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ COMMANDS = {
     "上課時間": "faq",
     "綁定班級": "bind_class",       # 新增：群組綁定班級
     "查詢綁定": "check_binding",    # 新增：查詢目前群組綁定狀態
+    "課後筆記": "note_create",       # 新增：老師課後筆記記錄
+    "記錄筆記": "note_create",       # 新增：老師課後筆記記錄（別名）
+    "筆記列表": "note_list_today",   # 新增：今日筆記列表
 }
 
 # 個資相關關鍵字，群組中不公開回覆
@@ -58,13 +62,14 @@ class LineRouter:
         self.config = config
         self.line_api = LineApiService(config)
         self.notion = NotionService(config)
-        self.session = SessionStore(config)
+        self.session = SessionStore()
         self.faq_handler = FaqHandler(config, self.line_api, self.notion)
         self.schedule_handler = ScheduleHandler(config, self.line_api, self.notion)
         self.homework_handler = HomeworkHandler(config, self.line_api, self.notion)
         self.leave_handler = LeaveHandler(config, self.line_api, self.notion)
         self.risk_handler = RiskHandler(config, self.line_api, self.notion)
         self.bind_handler = BindHandler(config, self.line_api, self.notion, self.session)
+        self.note_handler = NoteHandler(self.session)
 
     def handle(self, event: Dict[str, Any]) -> None:
         """處理單一 LINE 事件。"""
@@ -269,7 +274,7 @@ class LineRouter:
         """啟動課後筆記記錄流程。"""
         user_id = ctx["user_id"]
         reply_token = ctx["reply_token"]
-        first_reply = self.note_handler.start(user_id, self.notion)
+        first_reply = self.note_handler.start_note(user_id)
         self.line_api.reply(reply_token, first_reply)
 
     def _handle_note_list_today(self, ctx: Dict[str, Any]) -> None:

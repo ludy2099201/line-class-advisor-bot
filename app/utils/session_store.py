@@ -120,6 +120,34 @@ class SessionStore:
                 logger.warning("Redis save error for user %s: %s, falling back", user_id, exc)
         self._store[user_id] = session
 
+    # ── 通用 key-value 方法（供 NoteHandler / BindHandler 等使用）─────────────
+
+    def set(self, key: str, value: Any) -> None:
+        """以任意 key 儲存任意 JSON-serializable 值（含 TTL）。"""
+        session = {"state": "__raw__", "data": value, "expires_at": time.time() + SESSION_TTL}
+        if self._redis:
+            try:
+                self._redis.setex(
+                    self._key(key),
+                    SESSION_TTL,
+                    json.dumps(session, ensure_ascii=False),
+                )
+                return
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("Redis set error for key %s: %s, falling back", key, exc)
+        self._store[key] = session
+
+    def get(self, key: str) -> Optional[Any]:
+        """取得以任意 key 儲存的值；不存在或已過期則回傳 None。"""
+        session = self._get_session(key)
+        if session and session.get("state") == "__raw__":
+            return session.get("data")
+        return None
+
+    def delete(self, key: str) -> None:
+        """刪除以任意 key 儲存的值（等同 clear）。"""
+        self.clear(key)
+
     def cleanup_expired(self) -> int:
         """清除 In-Memory 中已過期的 session（Redis 由 TTL 自動處理）。"""
         if self._redis:
