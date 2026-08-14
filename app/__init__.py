@@ -6,6 +6,7 @@ import logging
 from flask import Flask
 from .config import Config
 from .routes import linebot_bp
+from .utils.event_deduplicator import EventDeduplicator
 
 
 def create_app(config_class: type = Config) -> Flask:
@@ -14,6 +15,17 @@ def create_app(config_class: type = Config) -> Flask:
 
     # 載入設定
     app.config.from_object(config_class)
+
+    # Event 去重需要在同一 app process 中共用；production 不允許 Redis
+    # 失敗時退回 instance-local memory，避免多實例產生資料重複寫入。
+    is_production = app.config.get("APP_ENV", "development").lower() in {
+        "production",
+        "prod",
+    }
+    app.extensions["event_deduplicator"] = EventDeduplicator(
+        redis_url=app.config.get("REDIS_URL", ""),
+        allow_memory_fallback=not is_production,
+    )
 
     # 設定 logging
     logging.basicConfig(

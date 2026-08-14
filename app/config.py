@@ -1,21 +1,30 @@
 """
-應用程式設定模組
-從環境變數讀取所有敏感設定，不在程式碼中硬編碼任何金鑰。
+應用程式設定模組。
+
+所有敏感設定皆由環境變數提供；正式環境透過 routes 的 readiness
+檢查與 webhook fail-closed 政策，拒絕在關鍵設定缺漏時處理事件。
 """
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 class Config:
+    """由環境變數建立的應用程式設定。"""
+
+    # ── 執行環境 ──────────────────────────────────────────────────────────────
+    APP_ENV: str = os.environ.get("APP_ENV", "development").strip().lower()
+    DEBUG: bool = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    GENERIC_TIMEZONE: str = os.environ.get("GENERIC_TIMEZONE", "Asia/Taipei")
+
     # ── LINE Messaging API ──────────────────────────────────────────────────
     LINE_CHANNEL_ACCESS_TOKEN: str = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
     LINE_CHANNEL_SECRET: str = os.environ.get("LINE_CHANNEL_SECRET", "")
 
     # ── Notion ──────────────────────────────────────────────────────────────
     NOTION_API_TOKEN: str = os.environ.get("NOTION_API_TOKEN", "")
-    # Notion 資料庫 ID（從 Notion URL 取得）
     NOTION_DB_FAQ: str = os.environ.get("NOTION_DB_FAQ", "")
     NOTION_DB_SCHEDULE: str = os.environ.get("NOTION_DB_SCHEDULE", "")
     NOTION_DB_HOMEWORK: str = os.environ.get("NOTION_DB_HOMEWORK", "")
@@ -31,14 +40,28 @@ class Config:
     GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
     LLM_MODEL: str = os.environ.get("LLM_MODEL", "gemini-3.1-flash-lite")
 
+    # ── Redis ───────────────────────────────────────────────────────────────
+    REDIS_URL: str = os.environ.get("REDIS_URL", "")
+
     # ── 風險通知對象 ─────────────────────────────────────────────────────────
-    # 主管或維護者的 LINE userId，用於接收高風險提醒
     ADMIN_LINE_USER_ID: str = os.environ.get("ADMIN_LINE_USER_ID", "")
 
     # ── 補習班基本資訊 ───────────────────────────────────────────────────────
     CRAM_SCHOOL_NAME: str = os.environ.get("CRAM_SCHOOL_NAME", "Moosie 補習班")
     BOT_NAME: str = os.environ.get("BOT_NAME", "AI班主任")
 
-    # ── 其他 ─────────────────────────────────────────────────────────────────
-    DEBUG: bool = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    GENERIC_TIMEZONE: str = os.environ.get("GENERIC_TIMEZONE", "Asia/Taipei")
+    # 在 production 中，缺少任一項設定都不得處理 webhook。Redis 亦列入其中，
+    # 因多實例部署時以 instance-local fallback 處理敏感 session 會造成狀態分裂。
+    REQUIRED_PRODUCTION_CONFIG = (
+        "LINE_CHANNEL_ACCESS_TOKEN",
+        "LINE_CHANNEL_SECRET",
+        "NOTION_API_TOKEN",
+        "GEMINI_API_KEY",
+        "ADMIN_LINE_USER_ID",
+        "REDIS_URL",
+    )
+
+    @classmethod
+    def is_production(cls) -> bool:
+        """判定是否採用 production 安全政策。"""
+        return cls.APP_ENV in {"production", "prod"}

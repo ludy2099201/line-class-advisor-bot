@@ -9,6 +9,8 @@ Notion API 服務封裝
   考試:     考試名稱(title) | 科目(select) | 考試日期(date) | 範圍(rich_text) | 班級(rich_text)
 """
 import logging
+import random
+import time
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
+NOTION_REQUEST_TIMEOUT_SECONDS = 15
+NOTION_QUERY_MAX_RETRIES = 3
 
 
 class NotionService:
@@ -468,28 +472,77 @@ class NotionService:
     def _query_database(
         self, database_id: str, payload: Dict
     ) -> List[Dict]:
-        """呼叫 Notion Database Query API。"""
+        """呼叫可安全重試的 Notion Database Query API。"""
         if not database_id or not self.token:
             return []
-        try:
-            resp = requests.post(
-                f"{NOTION_API_BASE}/databases/{database_id}/query",
-                json=payload,
-                headers=self._headers,
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                logger.error(
-                    "Notion query failed: db=%s status=%s body=%s",
-                    database_id[:8],
-                    resp.status_code,
-                    resp.text[:300],
-                )
-                return []
-            return resp.json().get("results", [])
-        except requests.RequestException as exc:
-            logger.exception("Notion query error: %s", exc)
+
+        url = f"{NOTION_API_BASE}/databases/{database_id}/query"
+        resp = self._post_query_with_retry(url, payload)
+        if resp is None:
             return []
+        if resp.status_code != 200:
+            logger.error(
+                "Notion query failed: db=%s status=%s body=%s",
+                database_id[:8],
+                resp.status_code,
+                resp.text[:300],
+            )
+            return []
+        try:
+            return resp.json().get("results", [])
+        except ValueError:
+            logger.error("Notion query returned invalid JSON: db=%s", database_id[:8])
+            return []
+
+    def _post_query_with_retry(self, url: str, payload: Dict):
+        """
+        只對唯讀查詢採受控重試。
+
+        429/529 會優先尊重 Retry-After；5xx 與暫時性網路錯誤則採 bounded
+        exponential backoff 加少量 jitter。建立、更新資料的 POST/PATCH 不呼叫此
+        方法，避免未知結果的重送造成重複資料。
+        """
+        for attempt in range(NOTION_QUERY_MAX_RETRIES + 1):
+            try:
+                resp = requests.post(
+                    url,
+                    json=payload,
+                    headers=self._headers,
+                    timeout=NOTION_REQUEST_TIMEOUT_SECONDS,
+                )
+            except requests.RequestException as exc:
+                if attempt >= NOTION_QUERY_MAX_RETRIES:
+                    logger.exception("Notion query failed after retries: %s", exc)
+                    return None
+                self._sleep_before_query_retry(attempt, None, "network_error")
+                continue
+
+            retryable = resp.status_code in {429, 529} or 500 <= resp.status_code < 600
+            if not retryable or attempt >= NOTION_QUERY_MAX_RETRIES:
+                return resp
+            self._sleep_before_query_retry(attempt, resp, resp.status_code)
+        return None
+
+    @staticmethod
+    def _sleep_before_query_retry(attempt: int, response, reason: Any) -> None:
+        """依 Notion Retry-After 或 bounded exponential backoff 暫停唯讀查詢。"""
+        retry_after = ""
+        if response is not None:
+            retry_after = response.headers.get("Retry-After", "")
+        try:
+            base_delay = float(retry_after)
+            if base_delay < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            base_delay = min(2**attempt, 30)
+        delay = base_delay + random.uniform(0, 0.25)
+        logger.warning(
+            "Retrying Notion query: attempt=%s delay_seconds=%.2f reason=%s",
+            attempt + 1,
+            delay,
+            reason,
+        )
+        time.sleep(delay)
 
     @staticmethod
     def _get_title(props: Dict, key: str) -> str:

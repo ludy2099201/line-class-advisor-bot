@@ -56,6 +56,9 @@ def router():
          patch("app.handlers.router.LeaveHandler"), \
          patch("app.handlers.router.RiskHandler"):
         r = LineRouter(MOCK_CONFIG)
+        # 未設定的 MagicMock 會在布林情境中為真，必須明確表示測試
+        # 起始時沒有請假多輪流程，否則會提早中斷一般 router 測試。
+        r.leave_handler.is_in_session.return_value = False
         return r
 
 
