@@ -56,6 +56,17 @@ class Config:
         os.environ.get("CLASS_LIST_CACHE_TTL_SECONDS", "300")
     )
 
+    # ── 背景 webhook queue ──────────────────────────────────────────────────
+    WEBHOOK_QUEUE_NAME: str = os.environ.get("WEBHOOK_QUEUE_NAME", "line_webhooks")
+    WEBHOOK_JOB_TIMEOUT_SECONDS: int = int(
+        os.environ.get("WEBHOOK_JOB_TIMEOUT_SECONDS", "120")
+    )
+    # 整個 event 包含可能非冪等的 LINE / Notion side effect，預設不得自動重跑。
+    WEBHOOK_JOB_MAX_RETRIES: int = int(os.environ.get("WEBHOOK_JOB_MAX_RETRIES", "0"))
+    WEBHOOK_JOB_RETRY_INTERVALS: str = os.environ.get(
+        "WEBHOOK_JOB_RETRY_INTERVALS", "10,60,300"
+    )
+
     # ── 補習班基本資訊 ───────────────────────────────────────────────────────
     CRAM_SCHOOL_NAME: str = os.environ.get("CRAM_SCHOOL_NAME", "Moosie 補習班")
     BOT_NAME: str = os.environ.get("BOT_NAME", "AI班主任")

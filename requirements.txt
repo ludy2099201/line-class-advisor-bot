@@ -12,3 +12,6 @@ google-genai>=1.0.0
 # ── Redis（Session 持久化，Railway Redis Plugin 使用）──────────────
 # 若不使用 Redis，可移除此行；系統會自動退回 In-Memory 模式
 redis>=5.0.0
+
+# ── 背景工作（webhook 快速確認與獨立 worker）──────────────────
+rq>=2.0.0

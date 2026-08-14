@@ -52,6 +52,12 @@ LineRouter → FAQ / 課表 / 作業 / 請假 / 筆記 / RiskHandler
 LINE Reply/Push      Notion              Gemini
 ```
 
+### 2.1 背景 webhook worker
+
+web service 在完成驗簽、JSON 解析與 Redis event claim 後，會將單一 event 放入 `line_webhooks` queue 並快速回覆 `200`。同一 Railway project 的獨立 worker service 以相同 Redis 消費事件，才執行 `LineRouter`、Notion、Gemini 與 LINE side effect。worker 只處理一個 job；要提高吞吐量應新增 worker replica，而不是在 web process 內啟動 thread。[12]
+
+整個 event 的預設 `WEBHOOK_JOB_MAX_RETRIES=0`。這是刻意的安全限制：事件包含可能非冪等的 Notion 寫入與一次性 LINE reply token，未知部分成功後重跑整個 job 可能製造重複紀錄或重複訊息。最終失敗工作會留在 RQ `FailedJobRegistry` 作為隔離區；必須先修復根因並人工核對 side effect，才能受控處理。既有 Notion 唯讀查詢與 LINE push 的局部重試不受此限制。[12]
+
 ## 3. 部署前權限與帳號準備
 
 正式部署前，應指定至少一位技術維運人員與一位行政資料擁有者。技術維運人員需要 Railway service 的部署與 Variables 權限、LINE Developers Console 的 Channel 設定權限、Notion integration 的設定權限，以及 GitHub repository 的 pull request/Actions 管理權限。行政資料擁有者需要維護 Notion 資料內容與欄位的權限，但不應同時擁有 production secret 的匯出權限。
@@ -101,6 +107,10 @@ Notion API 的平均 connection 限制為每秒三個請求，並存在 workspac
 | `STAFF_LINE_USER_IDS` | 選填 | 可在私訊新增與查詢課後筆記的教職員 LINE user ID，以逗號分隔；未設定時僅主要管理員可操作 |
 | `REDIS_URL` | 必填 | production session、webhook 去重與低敏感 FAQ／開課班級快取；不可用時 `/readyz` 應視為不可接流量 |
 | `FAQ_CACHE_TTL_SECONDS`、`CLASS_LIST_CACHE_TTL_SECONDS` | 選填 | 僅控制 FAQ 與開課班級清單快取，預設分別為 900 與 300 秒；不得用於學生筆記、請假、群組或風險資料 |
+| `WEBHOOK_QUEUE_NAME` | web／worker 必填 | 兩個 service 必須完全相同，預設 `line_webhooks` |
+| `WEBHOOK_JOB_TIMEOUT_SECONDS` | 選填 | 單一 worker job 的最長執行秒數，預設 120 |
+| `WEBHOOK_JOB_MAX_RETRIES` | 選填 | 預設 0；整個 event 未具完整跨服務冪等性前不得提高 |
+| `WEBHOOK_JOB_RETRY_INTERVALS` | 選填 | 僅在未來安全啟用 job retry 後才生效，預設 `10,60,300` |
 | `LLM_MODEL` | 選填 | 未設時使用程式預設 `gemini-3.1-flash-lite`；變更前先在 staging 評估 |
 | `NOTION_DB_*` | 依功能必填 | 填入對應資料庫 ID；未啟用功能可先不設，但應確認 handler 行為 |
 | `CRAM_SCHOOL_NAME`、`BOT_NAME` | 建議設定 | 顯示用名稱；不得填寫個人資料 |

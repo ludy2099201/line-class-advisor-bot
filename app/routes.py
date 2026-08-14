@@ -13,7 +13,7 @@ from typing import List
 
 from flask import Blueprint, abort, current_app, jsonify, request
 
-from .handlers.router import LineRouter
+from .services.webhook_queue import WebhookQueueUnavailable
 
 logger = logging.getLogger(__name__)
 linebot_bp = Blueprint("linebot", __name__)
@@ -70,8 +70,8 @@ def linebot_webhook():
         logger.error("Failed to parse LINE webhook payload: %s", exc)
         abort(400, description="Invalid JSON payload")
 
-    router = LineRouter(current_app.config)
     deduplicator = current_app.extensions["event_deduplicator"]
+    webhook_queue = current_app.extensions["webhook_queue"]
     events = payload.get("events", [])
 
     for event in events:
@@ -99,18 +99,19 @@ def linebot_webhook():
                 )
                 continue
 
-        logger.info("Processing LINE webhook event | event_id=%s type=%s", event_id, event_type)
         try:
-            router.handle(event)
-        except ValueError as exc:
-            logger.warning("Value error handling event type=%s: %s", event_type, exc)
-        except KeyError as exc:
-            logger.warning("Missing key in event type=%s: %s", event_type, exc)
-        except Exception as exc:  # pylint: disable=broad-except
-            # 捕捉未預期例外，記錄完整 stack trace 但不中斷其他事件處理
-            logger.exception(
-                "Unexpected error handling LINE event type=%s: %s", event_type, exc
+            webhook_queue.enqueue_event(event)
+        except WebhookQueueUnavailable as exc:
+            # 只在尚未成功入列時釋放 claim；讓 LINE 收到 503 後可安全重送。
+            if event_id:
+                deduplicator.release(event_id)
+            logger.error(
+                "Webhook background queue is unavailable | event_id=%s type=%s error=%s",
+                event_id,
+                event_type,
+                type(exc).__name__,
             )
+            abort(503, description="Webhook background queue is unavailable")
 
     return "OK", 200
 

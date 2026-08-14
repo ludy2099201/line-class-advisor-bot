@@ -7,6 +7,7 @@ from flask import Flask
 from .config import Config
 from .routes import linebot_bp
 from .utils.event_deduplicator import EventDeduplicator
+from .services.webhook_queue import WebhookQueue
 
 
 def create_app(config_class: type = Config) -> Flask:
@@ -26,6 +27,8 @@ def create_app(config_class: type = Config) -> Flask:
         redis_url=app.config.get("REDIS_URL", ""),
         allow_memory_fallback=not is_production,
     )
+    # Queue 在真正入列時才連線 Redis；web 與 worker 共用設定但只由 web service 入列。
+    app.extensions["webhook_queue"] = WebhookQueue(app.config)
 
     # 設定 logging
     logging.basicConfig(

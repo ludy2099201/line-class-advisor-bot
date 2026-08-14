@@ -1,0 +1,10 @@
+# Railway 獨立 LINE webhook worker service 設定
+# 在 worker service 設定中將 Config File Path 指向 /railway.worker.toml。
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python worker.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

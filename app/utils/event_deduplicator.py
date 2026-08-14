@@ -78,6 +78,22 @@ class EventDeduplicator:
             self._redis = None
             return None
 
+    def release(self, event_id: str) -> None:
+        """僅在事件尚未成功入列時釋放 claim，使 LINE 重送可再次安全嘗試。"""
+        if not event_id:
+            return
+        if self.redis_url:
+            client = self._get_redis_client()
+            if client is not None:
+                try:
+                    client.delete(self._key(event_id))
+                    return
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.error("Unable to release webhook deduplication claim: %s", exc)
+        if self.allow_memory_fallback:
+            with _MEMORY_LOCK:
+                _MEMORY_EVENTS.pop(event_id, None)
+
     def _claim_in_memory(self, event_id: str) -> bool:
         """開發模式的 thread-safe in-memory 去重與過期清理。"""
         now = time.time()
