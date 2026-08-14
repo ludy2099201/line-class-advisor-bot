@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_int(name: str, default: int) -> int:
+    """讀取整數設定；空白、無效值一律採安全預設以避免選填 reference 中斷服務。"""
+    value = os.environ.get(name, "").strip()
+    try:
+        return int(value) if value else default
+    except ValueError:
+        return default
+
+
 class Config:
     """由環境變數建立的應用程式設定。"""
 
@@ -51,18 +60,14 @@ class Config:
     STAFF_LINE_USER_IDS: str = os.environ.get("STAFF_LINE_USER_IDS", "")
 
     # ── 快取（僅適用於低敏感 FAQ 與班級清單）────────────────────────────────
-    FAQ_CACHE_TTL_SECONDS: int = int(os.environ.get("FAQ_CACHE_TTL_SECONDS", "900"))
-    CLASS_LIST_CACHE_TTL_SECONDS: int = int(
-        os.environ.get("CLASS_LIST_CACHE_TTL_SECONDS", "300")
-    )
+    FAQ_CACHE_TTL_SECONDS: int = _env_int("FAQ_CACHE_TTL_SECONDS", 900)
+    CLASS_LIST_CACHE_TTL_SECONDS: int = _env_int("CLASS_LIST_CACHE_TTL_SECONDS", 300)
 
     # ── 背景 webhook queue ──────────────────────────────────────────────────
     WEBHOOK_QUEUE_NAME: str = os.environ.get("WEBHOOK_QUEUE_NAME", "line_webhooks")
-    WEBHOOK_JOB_TIMEOUT_SECONDS: int = int(
-        os.environ.get("WEBHOOK_JOB_TIMEOUT_SECONDS", "120")
-    )
+    WEBHOOK_JOB_TIMEOUT_SECONDS: int = _env_int("WEBHOOK_JOB_TIMEOUT_SECONDS", 120)
     # 整個 event 包含可能非冪等的 LINE / Notion side effect，預設不得自動重跑。
-    WEBHOOK_JOB_MAX_RETRIES: int = int(os.environ.get("WEBHOOK_JOB_MAX_RETRIES", "0"))
+    WEBHOOK_JOB_MAX_RETRIES: int = _env_int("WEBHOOK_JOB_MAX_RETRIES", 0)
     WEBHOOK_JOB_RETRY_INTERVALS: str = os.environ.get(
         "WEBHOOK_JOB_RETRY_INTERVALS", "10,60,300"
     )
