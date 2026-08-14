@@ -22,3 +22,11 @@ def test_invalid_optional_numeric_values_use_safe_defaults(monkeypatch):
 
     reload(config_module)
     assert config_module.Config.FAQ_CACHE_TTL_SECONDS == 900
+
+
+def test_blank_session_ttl_uses_safe_default(monkeypatch):
+    monkeypatch.setenv("SESSION_TTL_SECONDS", "")
+    import app.utils.session_store as session_store
+
+    reload(session_store)
+    assert session_store.SESSION_TTL == 1800

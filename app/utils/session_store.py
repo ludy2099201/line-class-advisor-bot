@@ -12,8 +12,16 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Session 過期時間（秒），預設 30 分鐘
-SESSION_TTL = int(os.environ.get("SESSION_TTL_SECONDS", 1800))
+# Session 過期時間（秒），預設 30 分鐘；空白／無效選填值不得中斷 worker 啟動。
+def _session_ttl_seconds() -> int:
+    value = os.environ.get("SESSION_TTL_SECONDS", "").strip()
+    try:
+        return int(value) if value else 1800
+    except ValueError:
+        return 1800
+
+
+SESSION_TTL = _session_ttl_seconds()
 
 
 def _get_redis_client():
