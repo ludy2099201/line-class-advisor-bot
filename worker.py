@@ -16,9 +16,11 @@ def main() -> None:
 
     import redis  # pylint: disable=import-outside-toplevel
 
+    # RQ job metadata 可能含壓縮二進位資料；必須保留 bytes，避免
+    # redis-py 在 worker 讀取 job hash 前發生 UnicodeDecodeError。
     connection = redis.from_url(
         Config.REDIS_URL,
-        decode_responses=True,
+        decode_responses=False,
         socket_connect_timeout=3,
         socket_timeout=3,
     )

@@ -44,3 +44,14 @@ def test_worker_job_creates_router_inside_worker_context():
         from app.webhook_jobs import process_line_event
         process_line_event(event)
     router.handle.assert_called_once_with(event)
+
+
+def test_webhook_queue_preserves_binary_rq_job_metadata():
+    queue = WebhookQueue({"REDIS_URL": "redis://example"})
+    connection = MagicMock()
+    connection.ping.return_value = True
+
+    with patch("redis.from_url", return_value=connection) as from_url:
+        queue._get_queue()
+
+    assert from_url.call_args.kwargs["decode_responses"] is False

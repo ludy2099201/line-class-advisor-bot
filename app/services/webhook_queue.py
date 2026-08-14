@@ -58,9 +58,11 @@ class WebhookQueue:
         try:
             import redis  # pylint: disable=import-outside-toplevel
 
+            # RQ 在 job hash 內使用壓縮的二進位 metadata；不可讓 redis-py
+            # 在 RQ 取用前以 UTF-8 解碼，否則 worker 無法讀取已入列工作。
             connection = redis.from_url(
                 self.redis_url,
-                decode_responses=True,
+                decode_responses=False,
                 socket_connect_timeout=1,
                 socket_timeout=1,
             )
