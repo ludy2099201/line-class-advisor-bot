@@ -38,3 +38,11 @@ def test_blank_webhook_queue_name_uses_shared_default(monkeypatch):
 
     reload(config_module)
     assert config_module.Config.WEBHOOK_QUEUE_NAME == "line_webhooks"
+
+
+def test_blank_llm_model_uses_default(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "")
+    import app.config as config_module
+
+    reload(config_module)
+    assert config_module.Config.LLM_MODEL == "gemini-3.1-flash-lite"

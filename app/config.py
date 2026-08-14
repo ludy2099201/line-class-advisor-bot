@@ -47,7 +47,9 @@ class Config:
 
     # ── Gemini / LLM ────────────────────────────────────────────────────────
     GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
-    LLM_MODEL: str = os.environ.get("LLM_MODEL", "gemini-3.1-flash-lite")
+    # Railway 未設定的 service reference 可能是空字串，仍須使用已驗證的
+    # 預設模型，避免 LLM fallback 因 model is required 而退化。
+    LLM_MODEL: str = os.environ.get("LLM_MODEL", "").strip() or "gemini-3.1-flash-lite"
 
     # ── Redis ───────────────────────────────────────────────────────────────
     REDIS_URL: str = os.environ.get("REDIS_URL", "")
