@@ -46,6 +46,13 @@ class LeaveHandler:
             # 私訊中進行多輪對話收集請假資訊
             self._handle_dm_flow(ctx)
 
+    def is_in_session(self, ctx: Dict[str, Any]) -> bool:
+        """僅回報私訊使用者是否處於請假／補課多輪流程。"""
+        if ctx.get("source_type") != "user":
+            return False
+        user_id = ctx.get("user_id", "")
+        return bool(user_id and self.session.get_state(user_id))
+
     def _reply_group_guidance(self, ctx: Dict[str, Any], command: str) -> None:
         """群組中回覆引導訊息。"""
         reply_token = ctx["reply_token"]
