@@ -64,7 +64,9 @@ class Config:
     CLASS_LIST_CACHE_TTL_SECONDS: int = _env_int("CLASS_LIST_CACHE_TTL_SECONDS", 300)
 
     # ── 背景 webhook queue ──────────────────────────────────────────────────
-    WEBHOOK_QUEUE_NAME: str = os.environ.get("WEBHOOK_QUEUE_NAME", "line_webhooks")
+    # Railway 未設定的 service reference 會解析為空字串；仍須與 web
+    # service 共用預設 queue，否則 worker 會監聽一條不同的空名稱 queue。
+    WEBHOOK_QUEUE_NAME: str = os.environ.get("WEBHOOK_QUEUE_NAME", "").strip() or "line_webhooks"
     WEBHOOK_JOB_TIMEOUT_SECONDS: int = _env_int("WEBHOOK_JOB_TIMEOUT_SECONDS", 120)
     # 整個 event 包含可能非冪等的 LINE / Notion side effect，預設不得自動重跑。
     WEBHOOK_JOB_MAX_RETRIES: int = _env_int("WEBHOOK_JOB_MAX_RETRIES", 0)

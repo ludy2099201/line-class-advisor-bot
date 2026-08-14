@@ -30,3 +30,11 @@ def test_blank_session_ttl_uses_safe_default(monkeypatch):
 
     reload(session_store)
     assert session_store.SESSION_TTL == 1800
+
+
+def test_blank_webhook_queue_name_uses_shared_default(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_QUEUE_NAME", "")
+    import app.config as config_module
+
+    reload(config_module)
+    assert config_module.Config.WEBHOOK_QUEUE_NAME == "line_webhooks"
