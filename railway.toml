@@ -12,8 +12,9 @@ builder = "NIXPACKS"
 # --access-logfile - / --error-logfile -：輸出到 stdout，Railway 可收集
 startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60 --keep-alive 5 --access-logfile - --error-logfile -"
 
-# 健康檢查：Railway 定期 GET /health 確認服務正常
-healthcheckPath = "/health"
+# 就緒檢查：production 缺少安全關鍵設定時 /readyz 回傳 503，
+# Railway 不會將流量切換到尚未可安全處理 webhook 的新版本。
+healthcheckPath = "/readyz"
 healthcheckTimeout = 30
 
 # 重啟策略：失敗時自動重啟，最多 3 次
