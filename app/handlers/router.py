@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 from ..services.line_api import LineApiService
 from ..services.notion_service import NotionService
 from ..utils.session_store import SessionStore
+from ..utils.security import audit_event, is_allowed, parse_user_ids
 from .faq_handler import FaqHandler
 from .schedule_handler import ScheduleHandler
 from .homework_handler import HomeworkHandler
@@ -70,6 +71,12 @@ class LineRouter:
         self.risk_handler = RiskHandler(config, self.line_api, self.notion)
         self.bind_handler = BindHandler(config, self.line_api, self.notion, self.session)
         self.note_handler = NoteHandler(self.session, self.notion)
+        self.admin_ids = parse_user_ids(config.get("ADMIN_LINE_USER_IDS", ""))
+        legacy_admin = config.get("ADMIN_LINE_USER_ID", "").strip()
+        if legacy_admin:
+            self.admin_ids.add(legacy_admin)
+        self.staff_ids = parse_user_ids(config.get("STAFF_LINE_USER_IDS", ""))
+        self.note_operator_ids = self.admin_ids | self.staff_ids
 
     def handle(self, event: Dict[str, Any]) -> None:
         """處理單一 LINE 事件。"""
@@ -116,15 +123,20 @@ class LineRouter:
             ctx.get("is_privacy_candidate"),
         )
 
-        # ── 優先：檢查是否在綁定流程中（多輪對話） ──────────────────────────
-        if group_id and self.bind_handler.handle_step(ctx):
-            return  # 已被 bind_handler 處理，不繼續路由
-
-        # ── 優先：檢查是否在課後筆記流程中（多輪對話） ─────────────────────────
-        note_reply = self.note_handler.handle_step(user_id, text)
-        if note_reply is not None:
-            self.line_api.reply(reply_token, note_reply)
+        # ── 多輪敏感流程：只允許明確授權帳號繼續 ─────────────────────────────
+        if group_id and self._is_admin(user_id) and self.bind_handler.handle_step(ctx):
             return
+
+        note_state = self.session.get(user_id)
+        if note_state and note_state.get("mode") == "note_create":
+            if source_type != "user" or not self._is_note_operator(user_id):
+                self.session.delete(user_id)
+                self._deny_sensitive_action(ctx, "note_session")
+                return
+            note_reply = self.note_handler.handle_step(user_id, text)
+            if note_reply is not None:
+                self.line_api.reply(reply_token, note_reply)
+                return
 
         # ── 優先：檢查是否在請假流程中（多輪對話） ──────────────────────────
         if self.leave_handler.is_in_session(ctx):
@@ -154,6 +166,13 @@ class LineRouter:
 
         # ── 依指令分流 ────────────────────────────────────────────────────────
         command = ctx.get("command")
+        is_note_command = command in {"note_create", "note_list_today"} or text.startswith("查詢筆記")
+        if is_note_command and (source_type != "user" or not self._is_note_operator(user_id)):
+            self._deny_sensitive_action(ctx, "note_access")
+            return
+        if command in {"bind_class", "check_binding"} and not self._is_admin(user_id):
+            self._deny_sensitive_action(ctx, "group_binding")
+            return
 
         if command == "schedule_today":
             self.schedule_handler.handle_today(ctx)
@@ -184,6 +203,20 @@ class LineRouter:
             self.faq_handler.handle(ctx)
         else:
             logger.debug("No matching handler for command: %s", command)
+
+    def _is_admin(self, user_id: str) -> bool:
+        return is_allowed(user_id, self.admin_ids)
+
+    def _is_note_operator(self, user_id: str) -> bool:
+        return is_allowed(user_id, self.note_operator_ids)
+
+    def _deny_sensitive_action(self, ctx: Dict[str, Any], action: str) -> None:
+        """拒絕未授權或非私訊來源的敏感操作，不洩漏 allowlist 資訊。"""
+        audit_event(action, "denied_unauthorized", ctx.get("user_id", ""), ctx.get("group_id", ""))
+        self.line_api.reply(
+            ctx.get("reply_token", ""),
+            "此功能僅限已授權教職員以私訊方式使用，請聯繫管理員協助。",
+        )
 
     def _handle_check_binding(self, ctx: Dict[str, Any]) -> None:
         """查詢目前群組的班級綁定狀態。"""

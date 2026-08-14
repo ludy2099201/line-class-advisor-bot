@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from ..utils.low_sensitivity_cache import LowSensitivityCache
+
 logger = logging.getLogger(__name__)
 
 NOTION_API_BASE = "https://api.notion.com/v1"
@@ -43,6 +45,9 @@ class NotionService:
         self.db_ai_alerts = config.get("NOTION_DB_AI_ALERTS", "")
         self.db_classes = config.get("NOTION_DB_CLASSES", "")
         self.db_notes = config.get("NOTION_DB_NOTES", "")
+        self._low_sensitivity_cache = LowSensitivityCache(config.get("REDIS_URL", ""))
+        self._faq_cache_ttl = int(config.get("FAQ_CACHE_TTL_SECONDS", 900))
+        self._class_list_cache_ttl = int(config.get("CLASS_LIST_CACHE_TTL_SECONDS", 300))
 
         # 快取群組對應班級（減少 API 呼叫）
         self._group_class_cache: Dict[str, Optional[str]] = {}
@@ -51,19 +56,17 @@ class NotionService:
     # ── FAQ ──────────────────────────────────────────────────────────────────
 
     def query_faq(self) -> List[Dict[str, Any]]:
-        """查詢所有啟用中的 FAQ 條目。
-        
-        Notion 欄位：啟用(checkbox) | 問題(title) | 答案(rich_text) | 關鍵字(multi_select)
-        """
+        """查詢所有啟用中的 FAQ；僅此公開營運資料可使用快取。"""
         if not self.db_faq:
             logger.warning("NOTION_DB_FAQ not configured")
             return []
+        return self._low_sensitivity_cache.get_or_load(
+            "line:cache:faq:v1", self._faq_cache_ttl, self._load_faq
+        )
 
+    def _load_faq(self) -> List[Dict[str, Any]]:
         payload = {
-            "filter": {
-                "property": "啟用",
-                "checkbox": {"equals": True},
-            },
+            "filter": {"property": "啟用", "checkbox": {"equals": True}},
             "page_size": 100,
         }
         results = self._query_database(self.db_faq, payload)
@@ -383,11 +386,15 @@ class NotionService:
         return name
 
     def list_classes(self) -> List[Dict[str, Any]]:
-        """列出所有開課中的班級，供綁定流程顯示選單。"""
+        """列出開課班級；只快取不含學生或群組識別資料的清單。"""
         if not self.db_classes:
             logger.warning("NOTION_DB_CLASSES not configured")
             return []
+        return self._low_sensitivity_cache.get_or_load(
+            "line:cache:active_classes:v1", self._class_list_cache_ttl, self._load_classes
+        )
 
+    def _load_classes(self) -> List[Dict[str, Any]]:
         payload = {
             "filter": {"property": "開課中", "checkbox": {"equals": True}},
             "sorts": [{"property": "班名", "direction": "ascending"}],
@@ -401,11 +408,7 @@ class NotionService:
             time_slot = self._get_rich_text(props, "時段")
             days = self._get_multi_select(props, "上課週幾")
             if name:
-                classes.append({
-                    "name": name,
-                    "time_slot": time_slot,
-                    "days": "、".join(days) if days else "",
-                })
+                classes.append({"name": name, "time_slot": time_slot, "days": "、".join(days) if days else ""})
         logger.info("list_classes returned %d items", len(classes))
         return classes
 

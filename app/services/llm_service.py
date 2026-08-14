@@ -10,6 +10,8 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from ..utils.security import redact_direct_identifiers
+
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
@@ -89,12 +91,13 @@ class LlmService:
 
         model = self.config.get("LLM_MODEL", "gemini-3.1-flash-lite")
         sys_prompt = system_prompt or self._build_system_prompt()
+        sanitized_message = redact_direct_identifiers(user_message)
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = client.models.generate_content(
                     model=model,
-                    contents=user_message,
+                    contents=sanitized_message,
                     config=types.GenerateContentConfig(
                         system_instruction=sys_prompt,
                         max_output_tokens=max_tokens,
@@ -140,12 +143,13 @@ class LlmService:
 
         model = self.config.get("LLM_MODEL", "gemini-3.1-flash-lite")
         sys_prompt = system_prompt or self._build_system_prompt()
+        sanitized_message = redact_direct_identifiers(user_message)
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 response = client.models.generate_content(
                     model=model,
-                    contents=user_message,
+                    contents=sanitized_message,
                     config=types.GenerateContentConfig(
                         system_instruction=sys_prompt,
                         max_output_tokens=max_tokens,

@@ -43,8 +43,18 @@ class Config:
     # ── Redis ───────────────────────────────────────────────────────────────
     REDIS_URL: str = os.environ.get("REDIS_URL", "")
 
-    # ── 風險通知對象 ─────────────────────────────────────────────────────────
+    # ── 角色與風險通知對象 ───────────────────────────────────────────────────
+    # ADMIN_LINE_USER_ID 保留為正式環境的最低必要單一管理員；
+    # 多管理員與教職員 allowlist 使用逗號分隔的 LINE user ID。
     ADMIN_LINE_USER_ID: str = os.environ.get("ADMIN_LINE_USER_ID", "")
+    ADMIN_LINE_USER_IDS: str = os.environ.get("ADMIN_LINE_USER_IDS", "")
+    STAFF_LINE_USER_IDS: str = os.environ.get("STAFF_LINE_USER_IDS", "")
+
+    # ── 快取（僅適用於低敏感 FAQ 與班級清單）────────────────────────────────
+    FAQ_CACHE_TTL_SECONDS: int = int(os.environ.get("FAQ_CACHE_TTL_SECONDS", "900"))
+    CLASS_LIST_CACHE_TTL_SECONDS: int = int(
+        os.environ.get("CLASS_LIST_CACHE_TTL_SECONDS", "300")
+    )
 
     # ── 補習班基本資訊 ───────────────────────────────────────────────────────
     CRAM_SCHOOL_NAME: str = os.environ.get("CRAM_SCHOOL_NAME", "Moosie 補習班")

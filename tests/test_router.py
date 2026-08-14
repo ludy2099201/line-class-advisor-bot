@@ -173,3 +173,48 @@ class TestSilentRule:
         router.line_api.reply = MagicMock()
         router._handle_text_event(event)
         router.line_api.reply.assert_not_called()
+
+
+class TestSensitiveAccessControl:
+    """敏感筆記與群組綁定必須採預設拒絕的 allowlist 政策。"""
+
+    def test_unauthorized_direct_note_request_is_denied(self, router):
+        event = make_text_event("課後筆記", source_type="user", user_id="U_other")
+        router.line_api.reply = MagicMock()
+        router.note_handler.start_note = MagicMock()
+        router._handle_text_event(event)
+        router.note_handler.start_note.assert_not_called()
+        router.line_api.reply.assert_called_once()
+        assert "授權" in router.line_api.reply.call_args[0][1]
+
+    def test_admin_can_start_private_note(self, router):
+        event = make_text_event("課後筆記", source_type="user", user_id="U_admin")
+        router.line_api.reply = MagicMock()
+        router.note_handler.start_note = MagicMock(return_value="開始記錄")
+        router._handle_text_event(event)
+        router.note_handler.start_note.assert_called_once_with("U_admin")
+
+    def test_staff_allowlist_can_start_private_note(self, router):
+        router.staff_ids.add("U_staff")
+        router.note_operator_ids = router.admin_ids | router.staff_ids
+        event = make_text_event("筆記列表", source_type="user", user_id="U_staff")
+        router.line_api.reply = MagicMock()
+        router.notion.get_notes_by_date.return_value = []
+        router._handle_text_event(event)
+        assert router.line_api.reply.called
+
+    def test_group_note_request_is_denied_even_for_admin(self, router):
+        event = make_text_event("課後筆記", source_type="group", user_id="U_admin")
+        router.line_api.reply = MagicMock()
+        router.note_handler.start_note = MagicMock()
+        router._handle_text_event(event)
+        router.note_handler.start_note.assert_not_called()
+        assert "私訊" in router.line_api.reply.call_args[0][1]
+
+    def test_only_admin_can_start_group_binding(self, router):
+        event = make_text_event("綁定班級", source_type="group", user_id="U_other")
+        router.line_api.reply = MagicMock()
+        router.bind_handler.handle_start = MagicMock()
+        router._handle_text_event(event)
+        router.bind_handler.handle_start.assert_not_called()
+        assert "授權" in router.line_api.reply.call_args[0][1]

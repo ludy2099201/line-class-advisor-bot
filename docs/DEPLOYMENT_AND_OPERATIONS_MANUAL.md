@@ -97,7 +97,10 @@ Notion API 的平均 connection 限制為每秒三個請求，並存在 workspac
 | `NOTION_API_TOKEN` | 必填 | Notion integration token；僅分享必要資料庫 |
 | `GEMINI_API_KEY` | 必填 | Gemini 呼叫；依模型、配額與帳務設定管理 |
 | `ADMIN_LINE_USER_ID` | 必填 | 接收風險人工告警的管理員 user ID；建議另有機構備援流程 |
-| `REDIS_URL` | 必填 | production session 與 webhook 去重；不可用時 `/readyz` 應視為不可接流量 |
+| `ADMIN_LINE_USER_IDS` | 選填 | 其他可執行群組綁定與課後筆記操作的管理員 LINE user ID，以逗號分隔 |
+| `STAFF_LINE_USER_IDS` | 選填 | 可在私訊新增與查詢課後筆記的教職員 LINE user ID，以逗號分隔；未設定時僅主要管理員可操作 |
+| `REDIS_URL` | 必填 | production session、webhook 去重與低敏感 FAQ／開課班級快取；不可用時 `/readyz` 應視為不可接流量 |
+| `FAQ_CACHE_TTL_SECONDS`、`CLASS_LIST_CACHE_TTL_SECONDS` | 選填 | 僅控制 FAQ 與開課班級清單快取，預設分別為 900 與 300 秒；不得用於學生筆記、請假、群組或風險資料 |
 | `LLM_MODEL` | 選填 | 未設時使用程式預設 `gemini-3.1-flash-lite`；變更前先在 staging 評估 |
 | `NOTION_DB_*` | 依功能必填 | 填入對應資料庫 ID；未啟用功能可先不設，但應確認 handler 行為 |
 | `CRAM_SCHOOL_NAME`、`BOT_NAME` | 建議設定 | 顯示用名稱；不得填寫個人資料 |
@@ -127,15 +130,17 @@ cp .env.example .env
 # 編輯 .env：APP_ENV=development
 
 # 5. 執行測試與語法檢查
-python -m compileall -q app main.py
+python -m compileall -q app scripts main.py
 pytest -q
 pip-audit -r requirements.txt
+# 在已載入 staging 或 production Notion 設定的受控環境中執行；僅讀取 metadata。
+python scripts/validate_notion_schema.py
 
 # 6. 啟動本機服務
 gunicorn main:app --config gunicorn.conf.py
 ```
 
-開發模式允許 Redis 不存在時使用 In-Memory session 與 event 去重，以方便本機測試；**production 不允許**以此作為 Redis 故障的替代。測試應涵蓋有效/無效簽章、重複 event、Notion 429、LINE 409、危機固定回覆與未授權資料存取。Flask 官方建議透過 pytest fixture 建立 app 與 test client；本專案已在 `tests/conftest.py` 實作這個基礎。[8]
+開發模式允許 Redis 不存在時使用 In-Memory session 與 event 去重，以方便本機測試；**production 不允許**以此作為 Redis 故障的替代。課後筆記與群組綁定採預設拒絕的 allowlist：筆記只允許已授權帳號以私訊操作，群組綁定僅允許管理員。系統會以雜湊記錄授權拒絕事件，且在送往模型前遮罩常見 email、臺灣手機與身分證字號；此遮罩不是完整 DLP 替代方案。測試應涵蓋有效/無效簽章、重複 event、Notion 429、LINE 409、危機固定回覆與未授權資料存取。Flask 官方建議透過 pytest fixture 建立 app 與 test client；本專案已在 `tests/conftest.py` 實作這個基礎。[8]
 
 ## 7. Railway 正式部署程序
 

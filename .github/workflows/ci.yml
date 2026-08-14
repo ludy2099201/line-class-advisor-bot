@@ -35,7 +35,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Verify syntax
-        run: python -m compileall -q app main.py
+        run: python -m compileall -q app scripts main.py
 
       - name: Run tests
         run: pytest -q
