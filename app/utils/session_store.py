@@ -3,6 +3,8 @@ Session Store — 支援 Redis（生產環境）與 In-Memory（開發環境）�
 
 當環境變數 REDIS_URL 存在時，自動使用 Redis 以支援多實例部署（Railway）。
 未設定 REDIS_URL 時，退回 In-Memory 模式，方便本地開發與測試。
+正式環境以 allow_memory_fallback=False 建立，Redis 不可用時直接拋出
+SessionStoreUnavailable，避免多輪對話狀態在 instance-local memory 中分裂或遺失。
 """
 import json
 import logging
@@ -22,6 +24,10 @@ def _session_ttl_seconds() -> int:
 
 
 SESSION_TTL = _session_ttl_seconds()
+
+
+class SessionStoreUnavailable(RuntimeError):
+    """正式環境 Redis session 後端不可用時拋出。"""
 
 
 def _get_redis_client():
@@ -48,8 +54,11 @@ class SessionStore:
     若 Redis 不可用，自動退回 In-Memory 模式（單實例開發用）。
     """
 
-    def __init__(self):
+    def __init__(self, allow_memory_fallback: bool = True):
+        self.allow_memory_fallback = allow_memory_fallback
         self._redis = _get_redis_client()
+        if self._redis is None and not allow_memory_fallback:
+            raise SessionStoreUnavailable("Redis session store is required but unavailable")
         self._store: Dict[str, Dict[str, Any]] = {}
         mode = "Redis" if self._redis else "In-Memory"
         logger.info("SessionStore initialized in %s mode (TTL=%ds)", mode, SESSION_TTL)
@@ -85,8 +94,14 @@ class SessionStore:
                 self._redis.delete(self._key(user_id))
                 return
             except Exception as exc:  # pylint: disable=broad-except
+                self._raise_if_fallback_disallowed("clear", exc)
                 logger.warning("Redis clear error for user %s: %s", user_id, exc)
         self._store.pop(user_id, None)
+
+    def _raise_if_fallback_disallowed(self, operation: str, exc: Exception) -> None:
+        """正式環境不得在 Redis 操作失敗時改寫 instance-local memory。"""
+        if not self.allow_memory_fallback:
+            raise SessionStoreUnavailable(f"Redis session {operation} failed") from exc
 
     @staticmethod
     def _key(user_id: str) -> str:
@@ -99,6 +114,7 @@ class SessionStore:
                 raw = self._redis.get(self._key(user_id))
                 return json.loads(raw) if raw else None
             except Exception as exc:  # pylint: disable=broad-except
+                self._raise_if_fallback_disallowed("get", exc)
                 logger.warning("Redis get error for user %s: %s, falling back", user_id, exc)
         session = self._store.get(user_id)
         if session and time.time() > session.get("expires_at", 0):
@@ -125,6 +141,7 @@ class SessionStore:
                 )
                 return
             except Exception as exc:  # pylint: disable=broad-except
+                self._raise_if_fallback_disallowed("save", exc)
                 logger.warning("Redis save error for user %s: %s, falling back", user_id, exc)
         self._store[user_id] = session
 
@@ -142,6 +159,7 @@ class SessionStore:
                 )
                 return
             except Exception as exc:  # pylint: disable=broad-except
+                self._raise_if_fallback_disallowed("set", exc)
                 logger.warning("Redis set error for key %s: %s, falling back", key, exc)
         self._store[key] = session
 

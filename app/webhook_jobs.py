@@ -1,21 +1,33 @@
 """RQ worker 執行的 webhook 工作函式。"""
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from flask import Flask
-from rq import get_current_job
 
 from .handlers.router import LineRouter
 from .utils.security import audit_event, short_hash
 
 logger = logging.getLogger(__name__)
 
+# worker process 內重用同一個 Flask app，避免每個 event 重建 app、
+# Redis 去重與 queue 元件；每個 job 仍建立新的 LineRouter 以取得最新 Notion 對應。
+# RQ 預設為每個 job fork 子程序，因此 worker.py 會在 fork 前先呼叫 get_worker_app() 預熱。
+_APP: Optional[Flask] = None
+
+
+def get_worker_app() -> Flask:
+    """取得（必要時建立）worker 共用的 Flask app；Redis 連線皆為延遲建立，可安全 fork。"""
+    global _APP  # pylint: disable=global-statement
+    if _APP is None:
+        from . import create_app  # 避免 worker import 與 Flask app factory 循環依賴。
+
+        _APP = create_app()
+    return _APP
+
 
 def process_line_event(event: Dict[str, Any]) -> None:
     """在 worker process 內處理已驗簽且已去重的單一 LINE event。"""
-    from . import create_app  # 避免 worker import 與 Flask app factory 循環依賴。
-
-    app: Flask = create_app()
+    app = get_worker_app()
     event_type = event.get("type", "unknown")
     event_id = event.get("webhookEventId", "")
     with app.app_context():

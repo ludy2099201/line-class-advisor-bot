@@ -4,7 +4,7 @@
 使用簡易狀態機管理私訊中的多輪對話。
 """
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..services.line_api import LineApiService
 from ..services.notion_service import NotionService
@@ -28,11 +28,13 @@ class LeaveHandler:
         config: Dict[str, Any],
         line_api: LineApiService,
         notion: NotionService,
+        session: Optional[SessionStore] = None,
     ):
         self.config = config
         self.line_api = line_api
         self.notion = notion
-        self.session = SessionStore()
+        # 與 router 共用同一個 SessionStore，確保 fallback 政策一致。
+        self.session = session or SessionStore()
 
     def handle(self, ctx: Dict[str, Any]) -> None:
         """根據來源（群組或私訊）決定處理方式。"""
