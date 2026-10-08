@@ -5,12 +5,16 @@ from rq import Queue, Worker
 from rq.serializers import JSONSerializer
 
 from app.config import Config
-from app.webhook_jobs import audit_job_exception
+from app.webhook_jobs import get_worker_app, audit_job_exception
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     if not Config.REDIS_URL:
         raise RuntimeError("REDIS_URL is required for the LINE webhook worker")
 
@@ -37,6 +41,8 @@ def main() -> None:
         Config.WEBHOOK_QUEUE_NAME,
         Config.WEBHOOK_JOB_MAX_RETRIES,
     )
+    # 在 fork job 子程序前建立 app，讓每個 job 繼承同一個已初始化的 app。
+    get_worker_app()
     worker.work(with_scheduler=True)
 
 

@@ -63,11 +63,17 @@ class LineRouter:
         self.config = config
         self.line_api = LineApiService(config)
         self.notion = NotionService(config)
-        self.session = SessionStore()
+        is_production = str(config.get("APP_ENV", "development")).lower() in {
+            "production",
+            "prod",
+        }
+        # production 不允許 session 退回 instance-local memory；Redis 不可用時
+        # 讓 job 失敗並進入 FailedJobRegistry，而不是靜默遺失多輪對話狀態。
+        self.session = SessionStore(allow_memory_fallback=not is_production)
         self.faq_handler = FaqHandler(config, self.line_api, self.notion)
         self.schedule_handler = ScheduleHandler(config, self.line_api, self.notion)
         self.homework_handler = HomeworkHandler(config, self.line_api, self.notion)
-        self.leave_handler = LeaveHandler(config, self.line_api, self.notion)
+        self.leave_handler = LeaveHandler(config, self.line_api, self.notion, self.session)
         self.risk_handler = RiskHandler(config, self.line_api, self.notion)
         self.bind_handler = BindHandler(config, self.line_api, self.notion, self.session)
         self.note_handler = NoteHandler(self.session, self.notion)

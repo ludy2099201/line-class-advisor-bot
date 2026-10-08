@@ -1,8 +1,10 @@
 """SessionStore 單元測試。"""
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.utils import session_store as session_store_module
 from app.utils.session_store import SESSION_TTL, SessionStore
 
 
@@ -61,3 +63,44 @@ class TestSessionStore:
 
         store.delete("bind:group_1")
         assert store.get("bind:group_1") is None
+
+
+class TestSessionStoreFailClosed:
+    """production 不允許 session 退回 instance-local memory。
+
+    test_config 會 reload session_store，故一律經由 module 屬性取得目前的類別。
+    """
+
+    def test_raises_when_redis_missing_and_fallback_disallowed(self, monkeypatch):
+        monkeypatch.delenv("REDIS_URL", raising=False)
+
+        with pytest.raises(session_store_module.SessionStoreUnavailable):
+            session_store_module.SessionStore(allow_memory_fallback=False)
+
+    def test_raises_on_redis_error_instead_of_writing_memory(self, monkeypatch):
+        failing_redis = MagicMock()
+        failing_redis.setex.side_effect = ConnectionError("redis down")
+        failing_redis.get.side_effect = ConnectionError("redis down")
+        monkeypatch.setattr(
+            "app.utils.session_store._get_redis_client", lambda: failing_redis
+        )
+        store = session_store_module.SessionStore(allow_memory_fallback=False)
+
+        with pytest.raises(session_store_module.SessionStoreUnavailable):
+            store.set("bind_C1", {"bind_state": "selecting"})
+        with pytest.raises(session_store_module.SessionStoreUnavailable):
+            store.get("bind_C1")
+        assert store._store == {}
+
+    def test_development_still_falls_back_to_memory_on_redis_error(self, monkeypatch):
+        failing_redis = MagicMock()
+        failing_redis.setex.side_effect = ConnectionError("redis down")
+        failing_redis.get.side_effect = ConnectionError("redis down")
+        monkeypatch.setattr(
+            "app.utils.session_store._get_redis_client", lambda: failing_redis
+        )
+        store = session_store_module.SessionStore()
+
+        store.set("bind_C1", {"bind_state": "selecting"})
+
+        assert store.get("bind_C1") == {"bind_state": "selecting"}
