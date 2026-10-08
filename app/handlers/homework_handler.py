@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from ..services.line_api import LineApiService
 from ..services.notion_service import NotionService
+from ..utils.local_time import today_local
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,12 @@ class HomeworkHandler:
 
     def handle_today(self, ctx: Dict[str, Any]) -> None:
         """回覆今日截止作業。"""
-        target_date = date.today()
+        target_date = today_local(self.config.get("GENERIC_TIMEZONE"))
         self._reply_homework(ctx, target_date, "今日")
 
     def handle_tomorrow(self, ctx: Dict[str, Any]) -> None:
         """回覆明日截止作業。"""
-        target_date = date.today() + timedelta(days=1)
+        target_date = today_local(self.config.get("GENERIC_TIMEZONE")) + timedelta(days=1)
         self._reply_homework(ctx, target_date, "明日")
 
     def handle_exam(self, ctx: Dict[str, Any]) -> None:

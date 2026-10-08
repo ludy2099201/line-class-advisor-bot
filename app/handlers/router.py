@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 from ..services.line_api import LineApiService
 from ..services.notion_service import NotionService
 from ..utils.session_store import SessionStore
+from ..utils.local_time import today_local
 from ..utils.security import audit_event, is_allowed, parse_user_ids
 from .faq_handler import FaqHandler
 from .schedule_handler import ScheduleHandler
@@ -70,7 +71,9 @@ class LineRouter:
         self.leave_handler = LeaveHandler(config, self.line_api, self.notion)
         self.risk_handler = RiskHandler(config, self.line_api, self.notion)
         self.bind_handler = BindHandler(config, self.line_api, self.notion, self.session)
-        self.note_handler = NoteHandler(self.session, self.notion)
+        self.note_handler = NoteHandler(
+            self.session, self.notion, config.get("GENERIC_TIMEZONE", "")
+        )
         self.admin_ids = parse_user_ids(config.get("ADMIN_LINE_USER_IDS", ""))
         legacy_admin = config.get("ADMIN_LINE_USER_ID", "").strip()
         if legacy_admin:
@@ -312,9 +315,8 @@ class LineRouter:
 
     def _handle_note_list_today(self, ctx: Dict[str, Any]) -> None:
         """列出今日所有課後筆記。"""
-        from datetime import date
         reply_token = ctx["reply_token"]
-        today = date.today().isoformat()
+        today = today_local(self.config.get("GENERIC_TIMEZONE")).isoformat()
         notes = self.notion.get_notes_by_date(today)
         if not notes:
             self.line_api.reply(reply_token, f"📓 今日（{today}）尚無課後筆記。")
