@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from ..utils.local_time import today_local
 from ..utils.low_sensitivity_cache import LowSensitivityCache
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class NotionService:
 
     def __init__(self, config: Dict[str, Any]):
         self.token = config.get("NOTION_API_TOKEN", "")
+        self.timezone_name = config.get("GENERIC_TIMEZONE", "")
         self._headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
@@ -203,7 +205,7 @@ class NotionService:
             logger.warning("NOTION_DB_EXAMS not configured")
             return []
 
-        today = date.today()
+        today = today_local(self.timezone_name)
         week_end = today + timedelta(days=14)
         filters: List[Dict] = [
             {"property": "考試日期", "date": {"on_or_after": today.isoformat()}},
@@ -576,7 +578,7 @@ class NotionService:
         match = re.match(r"(\d{1,2})[/\-](\d{1,2})", date_str)
         if match:
             month, day = int(match.group(1)), int(match.group(2))
-            year = d.today().year
+            year = today_local().year
             try:
                 return d(year, month, day).isoformat()
             except ValueError:

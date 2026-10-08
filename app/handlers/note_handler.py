@@ -9,9 +9,9 @@
 """
 
 import logging
-from datetime import date
 from typing import Optional
 
+from ..utils.local_time import today_local
 from ..utils.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -31,13 +31,15 @@ EMOTION_EMOJI = {
 
 
 class NoteHandler:
-    def __init__(self, session_store: SessionStore, notion=None):
+    def __init__(self, session_store: SessionStore, notion=None, timezone_name: str = ""):
         """
         :param session_store: SessionStore 實例
         :param notion: NotionService 實例（可選，若未傳入則在 router 初始化後透過 set_notion 設定）
+        :param timezone_name: 計算筆記日期所用的時區，預設臺灣時間
         """
         self.session = session_store
         self.notion = notion
+        self.timezone_name = timezone_name
 
     def set_notion(self, notion) -> None:
         """設定 NotionService 實例（供 router 在初始化後呼叫）。"""
@@ -133,7 +135,7 @@ class NoteHandler:
         if not self.notion:
             return "⚠️ 筆記查詢服務尚未初始化，請聯繫管理員。"
         try:
-            today = date.today().isoformat()
+            today = today_local(self.timezone_name).isoformat()
             notes = self.notion.get_notes_by_date(today)
             if not notes:
                 return f"📓 今日（{today}）尚無課後筆記記錄。"
@@ -287,7 +289,7 @@ class NoteHandler:
 
         data = state["data"]
         teacher = state.get("teacher", "老師")
-        today = date.today().isoformat()
+        today = today_local(self.timezone_name).isoformat()
 
         student = data.get("student", "")
         course = data.get("course", "")
