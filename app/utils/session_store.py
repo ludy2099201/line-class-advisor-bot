@@ -1,169 +1,276 @@
-"""
-Session Store — 支援 Redis（生產環境）與 In-Memory（開發環境）雙模式
-
-當環境變數 REDIS_URL 存在時，自動使用 Redis 以支援多實例部署（Railway）。
-未設定 REDIS_URL 時，退回 In-Memory 模式，方便本地開發與測試。
-"""
+"""TTL-bound Redis sessions with development-only process-memory fallback."""
+from copy import deepcopy
 import json
 import logging
+import math
 import os
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
+import redis
+from redis.exceptions import ResponseError, WatchError
 
 logger = logging.getLogger(__name__)
 
-# Session 過期時間（秒），預設 30 分鐘；空白／無效選填值不得中斷 worker 啟動。
+
 def _session_ttl_seconds() -> int:
-    value = os.environ.get("SESSION_TTL_SECONDS", "").strip()
-    try:
-        return int(value) if value else 1800
-    except ValueError:
+    value = os.environ.get("SESSION_TTL_SECONDS")
+    if value is None:
         return 1800
+    try:
+        ttl = int(value.strip())
+        if ttl > 0:
+            return ttl
+    except ValueError:
+        pass
+    logger.warning("Invalid SESSION_TTL_SECONDS; using 1800 seconds")
+    return 1800
 
 
 SESSION_TTL = _session_ttl_seconds()
+REDIS_RETRY_COOLDOWN = 2
+_LOCK = threading.RLock()
+_MEMORY = {}
+_CLIENTS = {}
+_UNCHANGED = object()
 
 
-def _get_redis_client():
-    """嘗試建立 Redis 連線；失敗時回傳 None。"""
-    redis_url = os.environ.get("REDIS_URL", "")
-    if not redis_url:
-        return None
-    try:
-        import redis  # pylint: disable=import-outside-toplevel
-        client = redis.from_url(redis_url, decode_responses=True, socket_timeout=3)
-        client.ping()
-        logger.info("SessionStore: connected to Redis at %s", redis_url.split("@")[-1])
-        return client
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("SessionStore: Redis unavailable (%s), falling back to In-Memory.", exc)
-        return None
+class SessionStoreUnavailable(RuntimeError):
+    """Persistence is unavailable and memory fallback is forbidden."""
 
 
 class SessionStore:
+    """State and raw values use separate namespaces.
+
+    Development fallback is sticky per key until TTL expiry: memory wins over
+    Redis, including deletion tombstones, so stale Redis values cannot reappear
+    during that interval. This policy is intentionally process-local.
     """
-    多後端 Session 管理器。
 
-    優先使用 Redis（支援多實例部署）；
-    若 Redis 不可用，自動退回 In-Memory 模式（單實例開發用）。
-    """
+    def __init__(self, allow_memory_fallback: bool = True, redis_url: Optional[str] = None):
+        self.allow_memory_fallback = allow_memory_fallback
+        self.redis_url = os.environ.get("REDIS_URL", "") if redis_url is None else redis_url
 
-    def __init__(self):
-        self._redis = _get_redis_client()
-        self._store: Dict[str, Dict[str, Any]] = {}
-        mode = "Redis" if self._redis else "In-Memory"
-        logger.info("SessionStore initialized in %s mode (TTL=%ds)", mode, SESSION_TTL)
+    def _client(self):
+        if not self.redis_url:
+            raise SessionStoreUnavailable("REDIS_URL is not configured")
+        with _LOCK:
+            identity = (os.getpid(), self.redis_url)
+            client, retry_at = _CLIENTS.get(identity, (None, 0))
+            if time.monotonic() < retry_at:
+                raise SessionStoreUnavailable("Redis session reconnect cooldown")
+            if client is None:
+                client = redis.from_url(
+                    self.redis_url, decode_responses=True,
+                    socket_connect_timeout=3, socket_timeout=3,
+                )
+                _CLIENTS[identity] = (client, 0)
+            return client
 
-    def get_state(self, user_id: str) -> Optional[str]:
-        """取得使用者目前的對話狀態。"""
-        session = self._get_session(user_id)
-        return session.get("state") if session else None
-
-    def set_state(self, user_id: str, state: str) -> None:
-        """設定使用者的對話狀態。"""
-        session = self._get_or_create_session(user_id)
-        session["state"] = state
-        self._save_session(user_id, session)
-
-    def get_data(self, user_id: str, key: str, default: Any = None) -> Any:
-        """取得 session 中的特定資料欄位。"""
-        session = self._get_session(user_id)
-        if session is None:
-            return default
-        return session.get("data", {}).get(key, default)
-
-    def update_data(self, user_id: str, **kwargs) -> None:
-        """更新 session 中的資料欄位（支援多個 key-value）。"""
-        session = self._get_or_create_session(user_id)
-        session.setdefault("data", {}).update(kwargs)
-        self._save_session(user_id, session)
-
-    def clear(self, user_id: str) -> None:
-        """清除使用者的 session。"""
-        if self._redis:
-            try:
-                self._redis.delete(self._key(user_id))
-                return
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("Redis clear error for user %s: %s", user_id, exc)
-        self._store.pop(user_id, None)
+    def _unavailable(self, exc):
+        if self.redis_url:
+            with _LOCK:
+                identity = (os.getpid(), self.redis_url)
+                # Do not extend the cooldown on requests arriving during it.
+                if _CLIENTS.get(identity, (None, 0))[1] <= time.monotonic():
+                    _CLIENTS[identity] = (None, time.monotonic() + REDIS_RETRY_COOLDOWN)
+        if not self.allow_memory_fallback:
+            raise SessionStoreUnavailable("Redis session operation failed") from exc
+        if self.redis_url:
+            logger.warning("Redis session operation failed; using process memory: %s", exc)
 
     @staticmethod
-    def _key(user_id: str) -> str:
-        return f"session:{user_id}"
+    def _key(key: str, raw: bool = False) -> str:
+        return f"session-raw:{key}" if raw else f"session:{key}"
 
-    def _get_session(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """從 Redis 或 In-Memory 取得 session；過期則回傳 None。"""
-        if self._redis:
-            try:
-                raw = self._redis.get(self._key(user_id))
-                return json.loads(raw) if raw else None
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("Redis get error for user %s: %s, falling back", user_id, exc)
-        session = self._store.get(user_id)
-        if session and time.time() > session.get("expires_at", 0):
-            del self._store[user_id]
+    def _memory_key(self, key):
+        return (os.getpid(), self.redis_url, key)
+
+    def _memory_get(self, key):
+        identity = self._memory_key(key)
+        item = _MEMORY.get(identity)
+        if item is not None and item[0] <= time.time():
+            del _MEMORY[identity]
+            item = None
+        return item
+
+    def _memory_save(self, key, record):
+        _MEMORY[self._memory_key(key)] = (time.time() + SESSION_TTL, deepcopy(record))
+
+    @staticmethod
+    def _decode(value, raw):
+        if value is None:
             return None
-        return session
+        try:
+            record = json.loads(value)
+            if not isinstance(record, dict):
+                raise ValueError("record must be a dict")
+            expiry = record.get("expires_at")
+            if (not isinstance(expiry, (int, float)) or isinstance(expiry, bool)
+                    or not math.isfinite(expiry)):
+                raise ValueError("invalid expiry")
+            if raw:
+                if record.get("state") != "__raw__" or "data" not in record:
+                    raise ValueError("invalid raw record")
+            elif ("state" not in record or not isinstance(record.get("data"), dict)
+                  or not (record["state"] is None or isinstance(record["state"], str))
+                  or record["state"] == "__raw__"):
+                raise ValueError("invalid state record")
+            return record if expiry > time.time() else None
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            logger.warning("Discarding corrupt or wrong-shaped session record")
+            return None
 
-    def _get_or_create_session(self, user_id: str) -> Dict[str, Any]:
-        """取得或建立 session。"""
-        session = self._get_session(user_id)
-        if session is None:
-            session = {"state": None, "data": {}, "expires_at": time.time() + SESSION_TTL}
-        return session
-
-    def _save_session(self, user_id: str, session: Dict[str, Any]) -> None:
-        """將 session 寫回 Redis 或 In-Memory。"""
-        session["expires_at"] = time.time() + SESSION_TTL
-        if self._redis:
+    def _read(self, key, raw=False, take=False, expected_state=None):
+        with _LOCK:
+            if self.allow_memory_fallback:
+                item = self._memory_get(key)
+                if item is not None:
+                    if (expected_state is not None and item[1] is not None
+                            and item[1].get("state") != expected_state):
+                        return None
+                    if take:
+                        self._delete(key)
+                    return deepcopy(item[1])
             try:
-                self._redis.setex(
-                    self._key(user_id),
-                    SESSION_TTL,
-                    json.dumps(session, ensure_ascii=False),
-                )
-                return
+                client = self._client()
+                value = self._getdel(client, key, expected_state) if take else client.get(key)
+                record = self._decode(value, raw)
+                if value is not None and record is None and not take:
+                    client.delete(key)
+                return record
             except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("Redis save error for user %s: %s, falling back", user_id, exc)
-        self._store[user_id] = session
+                self._unavailable(exc)
+                return None
 
-    # ── 通用 key-value 方法（供 NoteHandler / BindHandler 等使用）─────────────
+    @staticmethod
+    def _getdel(client, key, expected_state=None):
+        if expected_state is None:
+            try:
+                return client.getdel(key)
+            except AttributeError:
+                pass
+            except ResponseError as exc:
+                if "unknown command" not in str(exc).lower():
+                    raise
+        while True:
+            with client.pipeline() as pipe:
+                try:
+                    pipe.watch(key)
+                    value = pipe.get(key)
+                    if expected_state is not None:
+                        record = SessionStore._decode(value, False)
+                        if record is not None and record["state"] != expected_state:
+                            return None
+                    pipe.multi()
+                    pipe.delete(key)
+                    pipe.execute()
+                    return value
+                except WatchError:
+                    continue
+
+    def _write(self, key, record):
+        with _LOCK:
+            if self.allow_memory_fallback and self._memory_get(key) is not None:
+                self._memory_save(key, record)
+                return
+            try:
+                self._client().set(key, json.dumps(record, ensure_ascii=False), ex=SESSION_TTL)
+            except Exception as exc:  # pylint: disable=broad-except
+                self._unavailable(exc)
+                self._memory_save(key, record)
+
+    def _delete(self, key):
+        with _LOCK:
+            _MEMORY.pop(self._memory_key(key), None)
+            try:
+                self._client().delete(key)
+            except Exception as exc:  # pylint: disable=broad-except
+                self._unavailable(exc)
+                self._memory_save(key, None)
+
+    def get_state(self, user_id: str) -> Optional[str]:
+        record = self._read(self._key(user_id))
+        return record.get("state") if record else None
+
+    def set_state(self, user_id: str, state: str) -> None:
+        self.transition(user_id, state)
+
+    def get_data(self, user_id: str, key: str, default: Any = None) -> Any:
+        record = self._read(self._key(user_id))
+        return record["data"].get(key, default) if record else default
+
+    def update_data(self, user_id: str, **kwargs) -> None:
+        self.transition(user_id, _UNCHANGED, **kwargs)
+
+    def transition(self, user_id: str, state: str, **data) -> None:
+        """Atomically merge data and change state with one persisted write."""
+        key = self._key(user_id)
+
+        def updated(record):
+            record = deepcopy(record) if record else {"state": None, "data": {}}
+            if state is not _UNCHANGED:
+                record["state"] = state
+            record["data"].update(deepcopy(data))
+            record["expires_at"] = time.time() + SESSION_TTL
+            return record
+
+        with _LOCK:
+            if self.allow_memory_fallback:
+                item = self._memory_get(key)
+                if item is not None:
+                    self._memory_save(key, updated(item[1]))
+                    return
+            record = None
+            try:
+                client = self._client()
+                while True:
+                    with client.pipeline() as pipe:
+                        try:
+                            pipe.watch(key)
+                            previous = pipe.get(key)
+                            record = self._decode(previous, False)
+                            value = updated(record)
+                            pipe.multi()
+                            if previous is not None and record is None:
+                                pipe.delete(key)
+                            pipe.set(key, json.dumps(value, ensure_ascii=False), ex=SESSION_TTL)
+                            pipe.execute()
+                            return
+                        except WatchError:
+                            continue
+            except Exception as exc:  # pylint: disable=broad-except
+                self._unavailable(exc)
+                self._memory_save(key, updated(record))
+
+    def clear(self, user_id: str) -> None:
+        """Delete a state session; use delete() for raw values."""
+        self._delete(self._key(user_id))
+
+    def take_state(self, user_id: str, expected_state: Optional[str] = None) -> Optional[dict]:
+        """Consume a state session, optionally only when its state still matches."""
+        return self._read(self._key(user_id), take=True, expected_state=expected_state)
 
     def set(self, key: str, value: Any) -> None:
-        """以任意 key 儲存任意 JSON-serializable 值（含 TTL）。"""
-        session = {"state": "__raw__", "data": value, "expires_at": time.time() + SESSION_TTL}
-        if self._redis:
-            try:
-                self._redis.setex(
-                    self._key(key),
-                    SESSION_TTL,
-                    json.dumps(session, ensure_ascii=False),
-                )
-                return
-            except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("Redis set error for key %s: %s, falling back", key, exc)
-        self._store[key] = session
+        record = {"state": "__raw__", "data": value, "expires_at": time.time() + SESSION_TTL}
+        self._write(self._key(key, raw=True), record)
 
     def get(self, key: str) -> Optional[Any]:
-        """取得以任意 key 儲存的值；不存在或已過期則回傳 None。"""
-        session = self._get_session(key)
-        if session and session.get("state") == "__raw__":
-            return session.get("data")
-        return None
+        record = self._read(self._key(key, raw=True), raw=True)
+        return record["data"] if record else None
+
+    def take(self, key: str) -> Optional[Any]:
+        """Atomically read and delete a raw value."""
+        record = self._read(self._key(key, raw=True), raw=True, take=True)
+        return record["data"] if record else None
 
     def delete(self, key: str) -> None:
-        """刪除以任意 key 儲存的值（等同 clear）。"""
-        self.clear(key)
+        self._delete(self._key(key, raw=True))
 
     def cleanup_expired(self) -> int:
-        """清除 In-Memory 中已過期的 session（Redis 由 TTL 自動處理）。"""
-        if self._redis:
-            return 0
-        now = time.time()
-        expired = [uid for uid, s in self._store.items() if now > s.get("expires_at", 0)]
-        for uid in expired:
-            del self._store[uid]
-        if expired:
-            logger.debug("Cleaned up %d expired sessions", len(expired))
-        return len(expired)
+        with _LOCK:
+            expired = [key for key, item in _MEMORY.items() if item[0] <= time.time()]
+            for key in expired:
+                del _MEMORY[key]
+            return len(expired)

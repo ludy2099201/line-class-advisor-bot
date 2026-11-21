@@ -32,7 +32,11 @@ class LeaveHandler:
         self.config = config
         self.line_api = line_api
         self.notion = notion
-        self.session = SessionStore()
+        self.session = SessionStore(
+            allow_memory_fallback=config.get("APP_ENV", "development").lower()
+            not in {"production", "prod"},
+            redis_url=config.get("REDIS_URL", ""),
+        )
 
     def handle(self, ctx: Dict[str, Any]) -> None:
         """根據來源（群組或私訊）決定處理方式。"""

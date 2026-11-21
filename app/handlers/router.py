@@ -63,7 +63,11 @@ class LineRouter:
         self.config = config
         self.line_api = LineApiService(config)
         self.notion = NotionService(config)
-        self.session = SessionStore()
+        self.session = SessionStore(
+            allow_memory_fallback=config.get("APP_ENV", "development").lower()
+            not in {"production", "prod"},
+            redis_url=config.get("REDIS_URL", ""),
+        )
         self.faq_handler = FaqHandler(config, self.line_api, self.notion)
         self.schedule_handler = ScheduleHandler(config, self.line_api, self.notion)
         self.homework_handler = HomeworkHandler(config, self.line_api, self.notion)

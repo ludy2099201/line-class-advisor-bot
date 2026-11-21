@@ -6,6 +6,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.handlers.router import LineRouter
+import app.utils.session_store as session_store
+from app.utils.session_store import SessionStoreUnavailable
 
 MOCK_CONFIG = {
     "LINE_CHANNEL_ACCESS_TOKEN": "test_token",
@@ -47,7 +49,8 @@ def make_text_event(
 
 
 @pytest.fixture
-def router():
+def router(monkeypatch):
+    monkeypatch.setattr(session_store, "_MEMORY", {})
     with patch("app.handlers.router.LineApiService"), \
          patch("app.handlers.router.NotionService"), \
          patch("app.handlers.router.FaqHandler"), \
