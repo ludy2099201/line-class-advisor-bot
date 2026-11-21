@@ -65,6 +65,53 @@ def router(monkeypatch):
         return r
 
 
+@pytest.mark.parametrize("operation", ["read", "leave", "note", "bind"])
+def test_session_unavailable_replies_without_clearing(router, monkeypatch, operation):
+    error = SessionStoreUnavailable("offline")
+    event = make_text_event("確認", source_type="user", user_id="U_admin")
+    router.line_api.reply.return_value = True
+    router.session.set_state("U_admin", "preserved")
+    if operation == "read":
+        monkeypatch.setattr(router.session, "get", MagicMock(side_effect=error))
+    elif operation == "leave":
+        router.leave_handler.is_in_session.side_effect = error
+    elif operation == "note":
+        router.session.set("U_admin", {"mode": "note_create", "step": "confirm", "data": {}})
+        monkeypatch.setattr(router.note_handler, "handle_step", MagicMock(side_effect=error))
+    else:
+        event = make_text_event("確認", user_id="U_admin")
+        monkeypatch.setattr(router.bind_handler, "handle_step", MagicMock(side_effect=error))
+    router.handle(event)
+    router.line_api.reply.assert_called_once()
+    assert "系統忙碌" in router.line_api.reply.call_args.args[1]
+    assert router.session.get_state("U_admin") == "preserved"
+
+
+@pytest.mark.parametrize("token,reply_ok", [("", True), ("reply", False)])
+def test_session_unavailable_reraises_if_no_reply_sent(router, monkeypatch, token, reply_ok):
+    error = SessionStoreUnavailable("offline")
+    monkeypatch.setattr(router.session, "get", MagicMock(side_effect=error))
+    router.line_api.reply.return_value = reply_ok
+    with pytest.raises(SessionStoreUnavailable) as caught:
+        router.handle(make_text_event("你好", source_type="user", reply_token=token))
+    assert caught.value is error
+    assert router.line_api.reply.call_count == bool(token)
+
+
+def test_router_does_not_swallow_unrelated_errors(router, monkeypatch):
+    monkeypatch.setattr(router.session, "get", MagicMock(side_effect=ValueError("bug")))
+    with pytest.raises(ValueError, match="bug"):
+        router.handle(make_text_event("你好", source_type="user"))
+    router.line_api.reply.assert_not_called()
+
+
+def test_router_resets_malformed_note_state(router):
+    router.session.set("U_admin", {"mode": "note_create", "step": "broken", "data": {}})
+    router.handle(make_text_event("確認", source_type="user", user_id="U_admin"))
+    assert "重新開始" in router.line_api.reply.call_args.args[1]
+    assert router.session.get("U_admin") is None
+
+
 class TestContextParsing:
     """測試 _parse_context 的解析邏輯。"""
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 
 from ..services.line_api import LineApiService
 from ..services.notion_service import NotionService
-from ..utils.session_store import SessionStore
+from ..utils.session_store import SessionStore, SessionStoreUnavailable
 from ..utils.security import audit_event, is_allowed, parse_user_ids
 from .faq_handler import FaqHandler
 from .schedule_handler import ScheduleHandler
@@ -84,6 +84,18 @@ class LineRouter:
 
     def handle(self, event: Dict[str, Any]) -> None:
         """處理單一 LINE 事件。"""
+        try:
+            self._dispatch_event(event)
+        except SessionStoreUnavailable:
+            logger.warning("Session storage unavailable while handling LINE event")
+            reply_token = event.get("replyToken", "")
+            if reply_token and self.line_api.reply(
+                reply_token, "⚠️ 系統忙碌中，請稍後再試，造成不便非常抱歉。🙏"
+            ):
+                return
+            raise
+
+    def _dispatch_event(self, event: Dict[str, Any]) -> None:
         event_type = event.get("type")
         if event_type != "message":
             return  # 目前只處理訊息事件
@@ -132,7 +144,7 @@ class LineRouter:
             return
 
         note_state = self.session.get(user_id)
-        if note_state and note_state.get("mode") == "note_create":
+        if note_state is not None:
             if source_type != "user" or not self._is_note_operator(user_id):
                 self.session.delete(user_id)
                 self._deny_sensitive_action(ctx, "note_session")
