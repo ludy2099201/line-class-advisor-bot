@@ -335,3 +335,20 @@ def test_namespace_prefixes_cannot_collide(redis_store):
     redis_store.transition("raw:user", "leave")
     assert redis_store.get("user") == {"mode": "note_create"}
     assert redis_store.get_state("raw:user") == "leave"
+
+
+def test_corrupt_cleanup_keeps_concurrent_replacement(redis_store, redis_client):
+    key = redis_store._key("U1")
+    redis_client.set(key, "not json")
+    fresh = json.dumps({"state": "WAIT_DATE", "data": {}, "expires_at": time.time() + 60})
+    real_get = redis_client.get
+
+    def get_then_replace(name):
+        value = real_get(name)
+        redis_client.set(name, fresh)
+        return value
+
+    redis_client.get = get_then_replace
+    assert redis_store.get_state("U1") is None
+    redis_client.get = real_get
+    assert real_get(key) == fresh

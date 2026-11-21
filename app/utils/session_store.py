@@ -138,11 +138,25 @@ class SessionStore:
                 value = self._getdel(client, key, expected_state) if take else client.get(key)
                 record = self._decode(value, raw)
                 if value is not None and record is None and not take:
-                    client.delete(key)
+                    self._delete_if_unchanged(client, key, value)
                 return record
             except Exception as exc:  # pylint: disable=broad-except
                 self._unavailable(exc)
                 return None
+
+    @staticmethod
+    def _delete_if_unchanged(client, key, value):
+        """Delete a discarded record only if no other writer replaced it meanwhile."""
+        with client.pipeline() as pipe:
+            try:
+                pipe.watch(key)
+                if pipe.get(key) != value:
+                    return
+                pipe.multi()
+                pipe.delete(key)
+                pipe.execute()
+            except WatchError:
+                pass
 
     @staticmethod
     def _getdel(client, key, expected_state=None):
