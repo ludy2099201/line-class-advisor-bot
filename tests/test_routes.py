@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 from unittest.mock import MagicMock
 
 
@@ -110,3 +111,46 @@ def test_queue_failure_releases_claim_and_returns_503(app, client):
     assert response.status_code == 503
     assert response.json["error"] == "Webhook background queue is unavailable"
     deduplicator.release.assert_called_once_with("evt-queue-unavailable")
+    deduplicator.confirm.assert_not_called()
+
+
+def test_claim_is_confirmed_only_after_enqueue(app, client):
+    dedup, queue = MagicMock(), MagicMock()
+    dedup.claim.return_value = True
+    queue.enqueue_event.side_effect = lambda event: dedup.confirm.assert_not_called()
+    app.extensions.update(event_deduplicator=dedup, webhook_queue=queue)
+    assert _post_event(app, client, _event("evt-promote")).status_code == 200
+    dedup.confirm.assert_called_once_with("evt-promote")
+
+
+def test_promotion_failure_does_not_fail_enqueued_request(app, client, caplog):
+    dedup, queue = MagicMock(), MagicMock()
+    dedup.claim.return_value = True
+    dedup.confirm.side_effect = RuntimeError("offline")
+    app.extensions.update(event_deduplicator=dedup, webhook_queue=queue)
+    assert _post_event(app, client, _event("evt-promote-failed")).status_code == 200
+    queue.enqueue_event.assert_called_once()
+    dedup.release.assert_not_called()
+    assert "Unable to confirm enqueued webhook claim" in caplog.text
+
+
+def test_redelivery_is_logged_without_changing_enqueue(app, client, caplog):
+    queue = MagicMock()
+    app.extensions["webhook_queue"] = queue
+    event = {**_event("evt-redelivered"), "deliveryContext": {"isRedelivery": True}}
+    with caplog.at_level(logging.INFO):
+        response = _post_event(app, client, event)
+    assert response.status_code == 200
+    assert "isRedelivery=True" in caplog.text
+    queue.enqueue_event.assert_called_once_with(event)
+
+
+def test_event_without_id_enqueues_without_claim_or_promotion(app, client):
+    dedup, queue = MagicMock(), MagicMock()
+    app.extensions.update(event_deduplicator=dedup, webhook_queue=queue)
+    event = _event()
+    del event["webhookEventId"]
+    assert _post_event(app, client, event).status_code == 200
+    queue.enqueue_event.assert_called_once_with(event)
+    dedup.claim.assert_not_called()
+    dedup.confirm.assert_not_called()

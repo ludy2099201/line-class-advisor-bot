@@ -70,6 +70,7 @@ class Config:
     # service 共用預設 queue，否則 worker 會監聽一條不同的空名稱 queue。
     WEBHOOK_QUEUE_NAME: str = os.environ.get("WEBHOOK_QUEUE_NAME", "").strip() or "line_webhooks"
     WEBHOOK_JOB_TIMEOUT_SECONDS: int = _env_int("WEBHOOK_JOB_TIMEOUT_SECONDS", 120)
+    WEBHOOK_PENDING_TTL_SECONDS: int = _env_int("WEBHOOK_PENDING_TTL_SECONDS", 120)
     # 整個 event 包含可能非冪等的 LINE / Notion side effect，預設不得自動重跑。
     WEBHOOK_JOB_MAX_RETRIES: int = _env_int("WEBHOOK_JOB_MAX_RETRIES", 0)
     WEBHOOK_JOB_RETRY_INTERVALS: str = os.environ.get(

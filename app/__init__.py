@@ -26,6 +26,7 @@ def create_app(config_class: type = Config) -> Flask:
     app.extensions["event_deduplicator"] = EventDeduplicator(
         redis_url=app.config.get("REDIS_URL", ""),
         allow_memory_fallback=not is_production,
+        pending_ttl_seconds=app.config.get("WEBHOOK_PENDING_TTL_SECONDS", 120),
     )
     # Queue 在真正入列時才連線 Redis；web 與 worker 共用設定但只由 web service 入列。
     app.extensions["webhook_queue"] = WebhookQueue(app.config)

@@ -2,12 +2,15 @@
 import logging
 from typing import Any, Dict, Optional
 
+from redis.exceptions import WatchError
 from rq import Queue, Retry
+from rq.job import Job
 from rq.serializers import JSONSerializer
 
 logger = logging.getLogger(__name__)
 
 JOB_FAILURE_TTL_SECONDS = 24 * 60 * 60
+JOB_DEDUP_TTL_SECONDS = 24 * 60 * 60
 
 
 class WebhookQueueUnavailable(RuntimeError):
@@ -32,23 +35,49 @@ class WebhookQueue:
         queue = self._get_queue()
         retry = self._retry_policy()
         try:
-            job = queue.enqueue(
-                "app.webhook_jobs.process_line_event",
-                event,
-                job_timeout=self.timeout,
-                retry=retry,
-                result_ttl=0,
-                failure_ttl=JOB_FAILURE_TTL_SECONDS,
-            )
+            options = dict(job_timeout=self.timeout, retry=retry, result_ttl=0,
+                           failure_ttl=JOB_FAILURE_TTL_SECONDS)
+            event_id = event.get("webhookEventId", "")
+            if event_id:
+                job = self._enqueue_once(queue, event, event_id, options)
+            else:
+                job = queue.enqueue("app.webhook_jobs.process_line_event", event, **options)
         except Exception as exc:  # pylint: disable=broad-except
             raise WebhookQueueUnavailable("Unable to enqueue LINE webhook event") from exc
         logger.info(
             "LINE webhook event enqueued | job_id=%s event_id=%s type=%s",
-            job.id,
+            job.id if job is not None else "already_processed",
             event.get("webhookEventId", ""),
             event.get("type", "unknown"),
         )
         return job
+
+    @staticmethod
+    def _enqueue_once(queue, event, event_id, options):
+        """Atomically guard enqueue; RQ alone overwrites jobs with reused IDs.
+
+        Keep a payload-free marker after result_ttl=0 removes completed jobs.
+        WATCH also protects against concurrent callers and ambiguous enqueue replies.
+        """
+        job_id = f"line-event-{event_id}"
+        marker = f"line:webhook:job:{event_id}"
+        while True:
+            with queue.connection.pipeline() as pipe:
+                try:
+                    pipe.watch(marker, Job.key_for(job_id))
+                    if pipe.exists(marker) or Job.exists(job_id, connection=pipe):
+                        logger.info("Duplicate webhook job enqueue ignored | job_id=%s", job_id)
+                        return queue.fetch_job(job_id)
+                    pipe.multi()
+                    job = queue.enqueue(
+                        "app.webhook_jobs.process_line_event", event,
+                        job_id=job_id, pipeline=pipe, **options,
+                    )
+                    pipe.set(marker, "1", ex=JOB_DEDUP_TTL_SECONDS)
+                    pipe.execute()
+                    return job
+                except WatchError:
+                    continue
 
     def _get_queue(self) -> Queue:
         if self._queue is not None:

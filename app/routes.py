@@ -77,6 +77,12 @@ def linebot_webhook():
     for event in events:
         event_type = event.get("type", "unknown")
         event_id = event.get("webhookEventId", "")
+        delivery_context = event.get("deliveryContext") or {}
+        logger.info(
+            "LINE webhook received | event_id=%s type=%s isRedelivery=%s",
+            event_id, event_type,
+            delivery_context.get("isRedelivery", False) if isinstance(delivery_context, dict) else False,
+        )
         if not event_id:
             logger.warning(
                 "LINE event has no webhookEventId; processing without deduplication | type=%s",
@@ -112,6 +118,12 @@ def linebot_webhook():
                 type(exc).__name__,
             )
             abort(503, description="Webhook background queue is unavailable")
+
+        if event_id:
+            try:
+                deduplicator.confirm(event_id)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error("Unable to confirm enqueued webhook claim: %s", type(exc).__name__)
 
     return "OK", 200
 
