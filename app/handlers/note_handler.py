@@ -64,8 +64,10 @@ class NoteHandler:
     def handle_step(self, user_id: str, text: str) -> Optional[str]:
         """處理多輪對話步驟，回傳 None 表示此訊息不屬於筆記流程"""
         state = self.session.get(user_id)
-        if not state or state.get("mode") != "note_create":
+        if state is None:
             return None
+        if not self._valid_state(state):
+            return self._restart(user_id)
 
         # 取消指令
         if text.strip() in ["取消", "cancel", "Cancel"]:
@@ -89,7 +91,22 @@ class NoteHandler:
         elif step == "confirm":
             return self._handle_confirm(user_id, state, text)
 
-        return None
+        return self._restart(user_id)
+
+    @staticmethod
+    def _valid_state(state) -> bool:
+        return (
+            isinstance(state, dict) and state.get("mode") == "note_create"
+            and isinstance(state.get("step"), str)
+            and state["step"] in {"student", "course", "performance", "emotion", "content", "followup", "confirm"}
+            and isinstance(state.get("data"), dict)
+            and all(isinstance(value, str) for value in state["data"].values())
+            and isinstance(state.get("teacher", "老師"), str)
+        )
+
+    def _restart(self, user_id: str) -> str:
+        self.session.delete(user_id)
+        return "⚠️ 筆記記錄狀態有誤，請輸入「課後筆記」重新開始記錄。"
 
     def query_student_notes(self, student_name: str, limit: int = 5) -> str:
         """查詢特定學生的歷史筆記"""
@@ -274,7 +291,7 @@ class NoteHandler:
             "輸入「確認」儲存，或「取消」放棄。"
         )
 
-    def _handle_confirm(self, user_id: str, state: dict, text: str) -> str:
+    def _handle_confirm(self, user_id: str, state: dict, text: str) -> Optional[str]:
         if text.strip() not in ["確認", "confirm", "是", "yes"]:
             if text.strip() in ["取消", "cancel", "否", "no"]:
                 self.session.delete(user_id)
@@ -282,8 +299,16 @@ class NoteHandler:
             return "請輸入「確認」儲存筆記，或「取消」放棄。"
 
         if not self.notion:
-            self.session.delete(user_id)
-            return "⚠️ 儲存服務尚未初始化，請聯繫管理員。"
+            return "⚠️ 儲存服務尚未初始化，請稍後再次輸入「確認」重試或聯繫管理員。"
+
+        state = self.session.take(user_id)
+        if state is None:
+            return None
+        if not self._valid_state(state):
+            return self._restart(user_id)
+        if state["step"] != "confirm":
+            self.session.set(user_id, state)
+            return None
 
         data = state["data"]
         teacher = state.get("teacher", "老師")
@@ -300,7 +325,7 @@ class NoteHandler:
         title = f"{today} {student} 課後筆記"
 
         try:
-            self.notion.create_note(
+            success = self.notion.create_note(
                 title=title,
                 student=student,
                 date=today,
@@ -312,21 +337,18 @@ class NoteHandler:
                 followup=followup,
                 recorder_user_id=user_id
             )
-            self.session.delete(user_id)
-
-            # 若有需要追蹤的事項，加強提醒
-            followup_reminder = ""
-            if followup:
-                followup_reminder = f"\n\n⚠️ 追蹤提醒：{followup}"
-
-            return (
-                f"✅ **課後筆記已儲存！**\n\n"
-                f"👤 {student}｜{today}\n"
-                f"{PERFORMANCE_EMOJI.get(perf, '')}{perf}　{EMOTION_EMOJI.get(emo, '')}{emo}"
-                f"{followup_reminder}"
-            )
-
         except Exception as e:
             logger.error(f"儲存課後筆記失敗: {e}")
-            self.session.delete(user_id)
-            return "⚠️ 儲存筆記時發生錯誤，請稍後再試或手動記錄到 Notion。"
+            success = False
+
+        if not success:
+            self.session.set(user_id, state)
+            return "⚠️ 儲存筆記時發生錯誤，請再次輸入「確認」重試或手動記錄到 Notion。"
+
+        followup_reminder = f"\n\n⚠️ 追蹤提醒：{followup}" if followup else ""
+        return (
+            f"✅ **課後筆記已儲存！**\n\n"
+            f"👤 {student}｜{today}\n"
+            f"{PERFORMANCE_EMOJI.get(perf, '')}{perf}　{EMOTION_EMOJI.get(emo, '')}{emo}"
+            f"{followup_reminder}"
+        )

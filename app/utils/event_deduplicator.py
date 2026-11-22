@@ -7,6 +7,7 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 EVENT_TTL_SECONDS = 24 * 60 * 60
+PENDING_TTL_SECONDS = 120
 _MEMORY_EVENTS: Dict[str, float] = {}
 _MEMORY_LOCK = threading.Lock()
 
@@ -25,9 +26,11 @@ class EventDeduplicator:
         redis_url: str = "",
         ttl_seconds: int = EVENT_TTL_SECONDS,
         allow_memory_fallback: bool = True,
+        pending_ttl_seconds: int = PENDING_TTL_SECONDS,
     ):
         self.redis_url = redis_url
         self.ttl_seconds = ttl_seconds
+        self.pending_ttl_seconds = max(1, int(pending_ttl_seconds))
         self.allow_memory_fallback = allow_memory_fallback
         self._redis = None
         self._redis_init_attempted = False
@@ -45,7 +48,7 @@ class EventDeduplicator:
                         self._key(event_id),
                         "1",
                         nx=True,
-                        ex=self.ttl_seconds,
+                        ex=self.pending_ttl_seconds,
                     )
                     return bool(claimed)
                 except Exception as exc:  # pylint: disable=broad-except
@@ -94,6 +97,29 @@ class EventDeduplicator:
             with _MEMORY_LOCK:
                 _MEMORY_EVENTS.pop(event_id, None)
 
+    def confirm(self, event_id: str) -> bool:
+        """成功入列後延長 claim；失敗僅記錄，不能使已入列事件回報失敗。"""
+        if not event_id:
+            return True
+        if self.redis_url:
+            client = self._get_redis_client()
+            if client is not None:
+                try:
+                    if client.expire(self._key(event_id), self.ttl_seconds):
+                        return True
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.error("Unable to confirm webhook deduplication claim: %s", exc)
+            if not self.allow_memory_fallback:
+                logger.warning("Webhook deduplication claim was not confirmed")
+                return False
+        if self.allow_memory_fallback:
+            with _MEMORY_LOCK:
+                if _MEMORY_EVENTS.get(event_id, 0) > time.time():
+                    _MEMORY_EVENTS[event_id] = time.time() + self.ttl_seconds
+                    return True
+        logger.warning("Webhook deduplication claim expired before confirmation")
+        return False
+
     def _claim_in_memory(self, event_id: str) -> bool:
         """開發模式的 thread-safe in-memory 去重與過期清理。"""
         now = time.time()
@@ -105,7 +131,7 @@ class EventDeduplicator:
             if event_id in _MEMORY_EVENTS:
                 return False
 
-            _MEMORY_EVENTS[event_id] = now + self.ttl_seconds
+            _MEMORY_EVENTS[event_id] = now + self.pending_ttl_seconds
             return True
 
     @staticmethod

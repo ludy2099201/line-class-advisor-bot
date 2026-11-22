@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _STATE = "bind_state"
 _CLASSES = "bind_classes"
 _SELECTED = "bind_selected"
+_OWNER = "bind_owner"
 
 
 class BindHandler:
@@ -57,7 +58,7 @@ class BindHandler:
             return
 
         # 取得班級清單
-        classes = self.notion.list_classes()
+        classes = self.notion.list_classes()[:20]
         if not classes:
             self.line_api.reply(
                 reply_token,
@@ -67,7 +68,7 @@ class BindHandler:
 
         # 儲存班級清單到 session（以 group_id 為 key）
         session_key = f"bind_{group_id}"
-        self.session.set(session_key, {_STATE: "selecting", _CLASSES: classes})
+        self.session.set(session_key, {_STATE: "selecting", _CLASSES: classes, _OWNER: user_id})
 
         # 格式化班級選單
         lines = ["📋 請選擇要綁定的班級（輸入編號）：\n"]
@@ -98,15 +99,17 @@ class BindHandler:
 
         session_key = f"bind_{group_id}"
         data = self.session.get(session_key)
-        if not data or data.get(_STATE) not in ("selecting", "confirming"):
+        if not isinstance(data, dict) or data.get(_STATE) not in ("selecting", "confirming"):
             return False
+        if data.get(_OWNER) != ctx.get("user_id"):
+            return True
 
         text = ctx.get("clean_text", "").strip()
         reply_token = ctx["reply_token"]
 
         # 取消
         if text in ("取消", "cancel", "Cancel"):
-            self.session.clear(session_key)
+            self.session.delete(session_key)
             self.line_api.reply(reply_token, "已取消綁定操作。")
             return True
 
@@ -189,6 +192,12 @@ class BindHandler:
             self.line_api.reply(reply_token, "\n".join(lines))
             return True
 
+        data = self.session.take(session_key)
+        if data is None:
+            return True
+        if data.get(_OWNER) != ctx.get("user_id") or data.get(_STATE) != "confirming":
+            self.session.set(session_key, data)
+            return True
         selected = data.get(_SELECTED, {})
         class_name = selected.get("name", "")
 
@@ -196,8 +205,11 @@ class BindHandler:
         group_name = f"慕熙補習班 - {class_name}群組"
 
         # 寫入 Notion
-        success = self.notion.bind_group_to_class(group_id, group_name, class_name)
-        self.session.clear(session_key)
+        try:
+            success = self.notion.bind_group_to_class(group_id, group_name, class_name)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("BindHandler: binding failed: %s", exc)
+            success = False
 
         if success:
             self.line_api.reply(
@@ -213,9 +225,10 @@ class BindHandler:
                 class_name,
             )
         else:
+            self.session.set(session_key, data)
             self.line_api.reply(
                 reply_token,
-                "⚠️ 綁定時發生錯誤，請稍後再試或聯繫管理員。",
+                "⚠️ 綁定時發生錯誤，請再次輸入「確認」重試或聯繫管理員。",
             )
             logger.error(
                 "BindHandler: failed to bind group %s to class %s",

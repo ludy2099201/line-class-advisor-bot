@@ -32,7 +32,11 @@ class LeaveHandler:
         self.config = config
         self.line_api = line_api
         self.notion = notion
-        self.session = SessionStore()
+        self.session = SessionStore(
+            allow_memory_fallback=config.get("APP_ENV", "development").lower()
+            not in {"production", "prod"},
+            redis_url=config.get("REDIS_URL", ""),
+        )
 
     def handle(self, ctx: Dict[str, Any]) -> None:
         """根據來源（群組或私訊）決定處理方式。"""
@@ -77,20 +81,22 @@ class LeaveHandler:
 
         state = self.session.get_state(user_id)
 
+        if (state is None and clean_text not in ("請假", "補課")
+                and ctx.get("command") not in ("leave", "makeup_class")):
+            return
+
         if state is None or clean_text in ("請假", "補課"):
             # 開始新的請假流程
             self.session.clear(user_id)
-            self.session.set_state(user_id, STATE_WAIT_NAME)
+            self.session.transition(user_id, STATE_WAIT_NAME)
             self.line_api.reply(reply_token, "好的，我來協助您登記請假。\n請問學生姓名？")
 
         elif state == STATE_WAIT_NAME:
-            self.session.update_data(user_id, student_name=clean_text)
-            self.session.set_state(user_id, STATE_WAIT_DATE)
+            self.session.transition(user_id, STATE_WAIT_DATE, student_name=clean_text)
             self.line_api.reply(reply_token, f"謝謝！請問 {clean_text} 的請假日期？\n（格式：MM/DD，例如 05/10）")
 
         elif state == STATE_WAIT_DATE:
-            self.session.update_data(user_id, leave_date=clean_text)
-            self.session.set_state(user_id, STATE_WAIT_REASON)
+            self.session.transition(user_id, STATE_WAIT_REASON, leave_date=clean_text)
             self.line_api.reply(
                 reply_token,
                 "請簡短填寫請假原因，或輸入「略過」跳過此步驟。\n"
@@ -98,15 +104,16 @@ class LeaveHandler:
             )
 
         elif state == STATE_WAIT_REASON:
+            session = self.session.take_state(user_id, expected_state=STATE_WAIT_REASON)
+            if session is None:
+                return
             reason = clean_text if clean_text != "略過" else ""
-            student_name = self.session.get_data(user_id, "student_name", "")
-            leave_date = self.session.get_data(user_id, "leave_date", "")
+            student_name = session["data"].get("student_name", "")
+            leave_date = session["data"].get("leave_date", "")
             data = {"student_name": student_name, "leave_date": leave_date, "reason": reason}
 
             # 寫入 Notion
             success = self._save_leave_to_notion(data, user_id)
-
-            self.session.clear(user_id)
 
             if success:
                 self.line_api.reply(
@@ -117,10 +124,11 @@ class LeaveHandler:
                     "我會通知行政老師確認補課安排，稍後會有專人與您聯繫。",
                 )
             else:
+                self.session.transition(user_id, STATE_WAIT_REASON, **session["data"])
                 self.line_api.reply(
                     reply_token,
                     "請假資訊已收到，但系統登記時發生問題。\n"
-                    "請直接聯繫行政老師確認，造成不便非常抱歉。🙏",
+                    "請再次傳送請假原因重試，造成不便非常抱歉。🙏",
                 )
         else:
             # 未知狀態，重置
@@ -133,14 +141,13 @@ class LeaveHandler:
     def _save_leave_to_notion(self, data: Dict[str, Any], user_id: str) -> bool:
         """將請假資料寫入 Notion Leaves 資料庫。"""
         try:
-            self.notion.create_leave_record(
+            return self.notion.create_leave_record(
                 student_name=data.get("student_name", ""),
                 leave_date=data.get("leave_date", ""),
                 reason=data.get("reason", ""),
                 source="LINE",
                 user_id_hash=self._hash_user_id(user_id),
             )
-            return True
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("Failed to save leave record to Notion: %s", exc)
             return False

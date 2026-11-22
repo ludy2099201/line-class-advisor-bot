@@ -46,3 +46,13 @@ def test_blank_llm_model_uses_default(monkeypatch):
 
     reload(config_module)
     assert config_module.Config.LLM_MODEL == "gemini-3.1-flash-lite"
+
+
+def test_pending_claim_ttl_is_configurable(monkeypatch):
+    import app.config as config_module
+    from app import create_app
+
+    monkeypatch.setenv("WEBHOOK_PENDING_TTL_SECONDS", "17")
+    reload(config_module)
+    app = create_app(config_module.Config)
+    assert app.extensions["event_deduplicator"].pending_ttl_seconds == 17
